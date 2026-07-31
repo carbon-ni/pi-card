@@ -1,8 +1,11 @@
 # Pi Card
 
-Control message delivery to Pi with prefix cards — even while Pi is mid-work.
+<img width="124" height="100" alt="image" src="https://github.com/user-attachments/assets/d2e4e0af-4e88-47db-be32-4a8d9ff0e7a8" align="left" />  
 
+Control message delivery to Pi with prefix cards — even while Pi is mid-work.
 Prefix your message with a two-character card to decide when and how it gets delivered.
+
+</br>
 
 ## Cards
 
