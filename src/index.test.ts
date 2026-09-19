@@ -39,11 +39,24 @@ describe("steering trigger wiring", () => {
     );
   });
 
-  it("queues && as a follow-up while active", () => {
+  it("queues && locally while active and delivers it after agent settles", () => {
     const harness = createHarness(false);
     expect(harness.input({ text: "&&summarize", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
-    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("summarize", { deliverAs: "followUp" });
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
     expect(harness.ctx.abort).not.toHaveBeenCalled();
+
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("summarize");
+  });
+
+  it("delivers queued cards in the order they were sent", () => {
+    const harness = createHarness(false);
+    harness.input({ text: "&&summarize", source: "interactive" }, harness.ctx);
+    harness.input({ text: "**run tests", source: "interactive" }, harness.ctx);
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("summarize\n\nrun tests");
   });
 
   it.each([
@@ -59,6 +72,89 @@ describe("steering trigger wiring", () => {
     const harness = createHarness(false);
     expect(harness.input({ text: "**focus", source: "extension" }, harness.ctx)).toEqual({ action: "continue" });
     expect(harness.input({ text: "hello", source: "interactive" }, harness.ctx)).toEqual({ action: "continue" });
+  });
+});
+
+describe("~~ flip", () => {
+  it("flips the last queued follow-up into a steer without interrupting the agent", () => {
+    const harness = createHarness(false);
+    harness.input({ text: "&&check the diff", source: "interactive" }, harness.ctx);
+    harness.ctx.abort.mockClear();
+
+    expect(harness.input({ text: "~~", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("check the diff", { deliverAs: "steer" });
+    expect(harness.ctx.abort).not.toHaveBeenCalled();
+
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalledWith("check the diff");
+  });
+
+  it("flips only the most recent card and leaves the rest queued", () => {
+    const harness = createHarness(false);
+    harness.input({ text: "&&first", source: "interactive" }, harness.ctx);
+    harness.input({ text: "&&second", source: "interactive" }, harness.ctx);
+    harness.input({ text: "~~", source: "interactive" }, harness.ctx);
+
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("second", { deliverAs: "steer" });
+
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("first");
+  });
+
+  it("drains the queue when every follow-up is flipped", () => {
+    const harness = createHarness(false);
+    harness.input({ text: "&&first", source: "interactive" }, harness.ctx);
+    harness.input({ text: "&&second", source: "interactive" }, harness.ctx);
+    harness.input({ text: "~~", source: "interactive" }, harness.ctx);
+    harness.input({ text: "~~", source: "interactive" }, harness.ctx);
+
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalledWith(expect.stringContaining("first"));
+  });
+
+  it("refuses to flip an interrupt card because the abort cannot be undone", () => {
+    const harness = createHarness(false);
+    harness.input({ text: "**focus on tests", source: "interactive" }, harness.ctx);
+    harness.ctx.abort.mockClear();
+
+    expect(harness.input({ text: "~~", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(harness.ctx.abort).not.toHaveBeenCalled();
+
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("focus on tests");
+  });
+
+  it("refuses to flip a brainstorm card", () => {
+    const harness = createHarness(false);
+    harness.input({ text: "??simpler approach", source: "interactive" }, harness.ctx);
+
+    expect(harness.input({ text: "~~", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
+
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith(
+      "Stop the previous approach. Let's brainstorm simpler approach before taking further action.",
+    );
+  });
+
+  it("notifies when there is nothing queued to flip", () => {
+    const harness = createHarness(false);
+    expect(harness.input({ text: "~~", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(harness.ctx.ui.notify).toHaveBeenCalledWith("Nothing queued to flip", "warning");
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(harness.ctx.abort).not.toHaveBeenCalled();
+  });
+
+  it("passes through messages that merely start with ~~", () => {
+    const harness = createHarness(false);
+    expect(harness.input({ text: "~~like this~~", source: "interactive" }, harness.ctx)).toEqual({ action: "continue" });
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
   });
 });
 

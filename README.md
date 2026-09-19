@@ -12,8 +12,9 @@ Prefix your message with a two-character card to decide when and how it gets del
 | Prefix | Card | Active | Idle |
 |---|---|---|---|
 | `**` | Interrupt | Aborts current work, delivers message after agent settles | Sends immediately |
-| `&&` | Follow-up | Queues message after current run finishes | Sends immediately |
+| `&&` | Follow-up | Queues message after current run finishes (flippable) | Sends immediately |
 | `??` | Brainstorm | Aborts current work, delivers a brainstorming prompt after agent settles | Sends immediately with brainstorming framing |
+| `~~` | Flip | Delivers the last queued `&&` as a steer — agent sees it mid-run, no abort | — |
 
 ## Behavior by agent state
 
@@ -26,6 +27,9 @@ All prefixes are stripped and the message is sent immediately. Brainstorm (`??`)
 - **`**`** — aborts the current agent run and queues the message. Once the agent settles, the message is delivered as the next prompt.
 - **`&&`** — queues the message as a follow-up. Delivered after the current run completes without interrupting it.
 - **`??`** — aborts the current run and queues a brainstorming prompt (`Stop the previous approach. Let's brainstorm … before taking further action.`).
+- **`~~`** (sent alone) — flips the most recent queued `&&` into a steer: the message is handed to the agent immediately, mid-run, without interrupting it. Work in progress continues. Flipping an interrupt or brainstorm card is refused (an aborted run can't be resumed), and `~~text` passes through untouched so markdown strikethrough stays safe.
+
+Note: a plain message sent without a prefix is a native steer the moment you press Enter — pi owns it and it cannot be recalled. If you might change your mind about timing, send `&&` first and flip it with `~~` when needed.
 
 ## Usage
 
@@ -33,6 +37,7 @@ All prefixes are stripped and the message is sent immediately. Brainstorm (`??`)
 **fix the type error in auth.ts
 &&summarize what you changed
 ??is there a simpler approach to this caching layer
+~~
 ```
 
 Ordinary messages without a prefix pass through unchanged.
