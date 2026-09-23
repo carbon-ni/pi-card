@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import registerCard, { parseTrigger } from "./index.js";
-import { classifyMessage } from "./router.js";
+import { classifyMessage, classifyMessageDetailed } from "./router.js";
 import { debounceDelayFromEnv } from "./debounce.js";
+import { loadRoutingExamples } from "./routing-examples.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 beforeEach(() => {
   vi.stubEnv("TYPESAFE_API_KEY", "");
@@ -26,6 +30,36 @@ describe("parseTrigger", async () => {
 
   it.each(["ordinary message", "*partial", "**   ", "&&", "??"])("ignores invalid input %j", async (text) => {
     expect(parseTrigger(text)).toBeUndefined();
+  });
+});
+
+describe("routing examples config", () => {
+  it("sends examples as structured context, not instructions", async () => {
+    const fetcher = vi.fn().mockResolvedValue(routeResponse("steer"));
+    await classifyMessageDetailed("fix that now", "key", fetcher as any, [{ text: "please correct this", route: "steer" }]);
+    const request = JSON.parse(fetcher.mock.calls[0][1].body);
+    expect(request.state).toEqual({ message: "fix that now", examples: [{ message: "please correct this", expectedRoute: "steer" }] });
+  });
+
+  it("loads valid labeled examples", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-card-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ examples: [{ text: "hold this thought", route: "followUp" }] }));
+    try {
+      expect(loadRoutingExamples(path)).toEqual([{ text: "hold this thought", route: "followUp" }]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { examples: [{ text: "", route: "steer" }] },
+    { examples: [{ text: "hello", route: "unclear" }] },
+    { examples: [{ text: "same", route: "steer" }, { text: " SAME ", route: "stop" }] },
+  ])("rejects invalid config safely", (config) => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-card-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify(config));
+    try { expect(() => loadRoutingExamples(path)).toThrow(); }
+    finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

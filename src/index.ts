@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { debounceDelayFromEnv, TimeGapDebouncer } from "./debounce.js";
-import { classifyMessageDetailed } from "./router.js";
+import { classifyMessageDetailed, type RoutingExample } from "./router.js";
+import { loadRoutingExamples } from "./routing-examples.js";
 
 export type SteeringTrigger =
   | { kind: "interrupt"; message: string }
@@ -40,6 +41,13 @@ export default function registerCard(pi: ExtensionAPI): void {
   let routingQueue = Promise.resolve();
   let nextRouteId = 1;
   const apiKey = process.env.TYPESAFE_API_KEY;
+  let routingExamples: RoutingExample[] = [];
+  try {
+    routingExamples = loadRoutingExamples();
+  } catch {
+    // Invalid preferences must not prevent extension startup or change fallback behavior.
+    console.warn("[pi-card] Invalid routing config; using default Jev routing.");
+  }
   const debounceRequested = process.env.PI_CARD_DEBOUNCE_ENABLED === "true";
   const debounceEnabled = debounceRequested && Boolean(apiKey);
   const debounceDelay = debounceDelayFromEnv(process.env.PI_CARD_DEBOUNCE_MS);
@@ -73,7 +81,7 @@ export default function registerCard(pi: ExtensionAPI): void {
     const routeTask = routingQueue.then(async () => {
       let decision;
       try {
-        decision = await classifyMessageDetailed(text, apiKey!);
+        decision = await classifyMessageDetailed(text, apiKey!, fetch, routingExamples);
       } catch (error) {
         const failure = error instanceof Error && error.name === "AbortError"
           ? "timeout"
@@ -153,6 +161,7 @@ export default function registerCard(pi: ExtensionAPI): void {
       debounceRequested,
       debounceEnabled,
       debounceDelayMs: debounceDelay,
+      routingExamplesConfigured: routingExamples.length > 0,
     });
   });
 

@@ -6,6 +6,7 @@ const ROUTE_CONFIDENCE_THRESHOLD = 0.8;
 export const ROUTE_TIMEOUT_MS = 1_500;
 
 type FetchLike = typeof fetch;
+export type RoutingExample = { text: string; route: Exclude<Route, "unclear"> };
 
 export interface RouteDecision {
   choice: Route;
@@ -27,6 +28,7 @@ export async function classifyMessageDetailed(
   text: string,
   apiKey: string,
   fetcher: FetchLike = fetch,
+  examples: RoutingExample[] = [],
 ): Promise<RouteDecision> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ROUTE_TIMEOUT_MS);
@@ -41,7 +43,10 @@ export async function classifyMessageDetailed(
       signal: controller.signal,
       body: JSON.stringify({
         model: "jev-latest",
-        state: { message: text },
+        state: {
+          message: text,
+          ...(examples.length ? { examples: examples.map(({ text: example, route }) => ({ message: example, expectedRoute: route })) } : {}),
+        },
         questions: {
           route: {
             type: "choice",

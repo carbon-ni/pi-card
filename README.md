@@ -53,7 +53,22 @@ Without a TypeSafe key, plain text follows Pi's native behavior. While Pi is act
 
 Without `TYPESAFE_API_KEY`, ordinary messages without a prefix pass through unchanged. With the key configured, unprefixed interactive text is sent to TypeSafe Jev for delivery-timing classification: clear stop requests interrupt, clear corrections steer, clear follow-ups queue, and unclear intent is non-destructive (queued as a follow-up while active). Stop requires a high probability and confidence threshold. Inference has a 1.5-second timeout; network, timeout, or invalid-response failures preserve Pi's native input behavior. Prefix cards always take precedence; extension-injected input and messages with attachments bypass classification.
 
-**Privacy:** with the key configured, eligible raw text is transmitted to TypeSafe AI's API for classification. Do not enable this if that external processing is unsuitable for your messages. The key and message text are not logged by pi-card.
+**Privacy:** with the key configured, eligible raw text and configured example text are transmitted to TypeSafe AI's API for classification. Do not enable this if that external processing is unsuitable for your messages. Neither is logged by pi-card. The global config is local preference data, not a secret store.
+
+### Personal routing examples
+
+Optionally create `~/.pi/agent/pi-card.json`:
+
+```json
+{
+  "examples": [
+    { "text": "park this until the tests finish", "route": "followUp" },
+    { "text": "switch to the staging database", "route": "steer" }
+  ]
+}
+```
+
+Examples guide Jev's interpretation of similar wording; they are not exact phrase rules. Supported routes are `stop`, `steer`, and `followUp`. The config is read from the user's global Pi agent directory only (not from project files). It allows at most 20 examples, 1,000 characters per example, and a 32 KB file. Invalid config is ignored as a whole with a generic warning, then default routing is used. A stop example never bypasses the existing probability and confidence thresholds. Prefix cards still take precedence; no API key, classifier failures, attachments, and non-interactive inputs retain existing behavior.
 
 ### Routing diagnostics
 
@@ -73,7 +88,7 @@ Set `PI_CARD_DEBOUNCE_ENABLED=true` to combine consecutive eligible unprefixed i
 
 ### Check routing against synthetic examples
 
-Run `npm run eval:jev` with `TYPESAFE_API_KEY` set. This sends only the synthetic English and Portuguese fixtures in `scripts/eval-jev.ts` to TypeSafe. It runs the live Jev classifier and pi-card's confidence/stop policy, then prints observed routes, the returned model version, latency, a confusion matrix, and mismatches. It does not start a Pi agent or measure full Pi end-to-end behavior. The target is at least 80% exact matches and no false stops on the safety cases. The command exits nonzero for any false stop; other mismatches remain visible for review.
+Run `npm run eval:jev` with `TYPESAFE_API_KEY` set. This sends only the synthetic English and Portuguese fixtures in `scripts/eval-jev.ts` to TypeSafe. It runs the live Jev classifier and pi-card's confidence/stop policy, then prints observed routes, the returned model version, latency, a confusion matrix, and mismatches. It also runs two personalized synthetic cases both without examples and with their labeled examples, reporting the outcomes side by side. This is a live, nondeterministic comparison, not a quality guarantee. It does not start a Pi agent or measure full Pi end-to-end behavior. The target is at least 80% exact matches and no false stops on the safety cases. The command exits nonzero for any false stop; other mismatches remain visible for review.
 
 In one run, Jev 1.13.0 matched 9/10 fixtures with zero false stops. It labeled the partial-subtask “stop editing README but continue tests” case `unclear` instead of the expected `steer`. That is safe but misses the requested correction. This small synthetic check is not a quality guarantee. Re-run it after changing the classifier or policy.
 

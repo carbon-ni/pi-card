@@ -34,6 +34,21 @@ const cases: Case[] = [
   },
 ];
 
+const personalizedCases: Array<Case & { examples: Array<{ text: string; route: "steer" | "followUp" }> }> = [
+  {
+    id: "personalized-park",
+    text: "park this until the tests finish",
+    expected: "followUp",
+    examples: [{ text: "hold this thought until the run ends", route: "followUp" }],
+  },
+  {
+    id: "personalized-switch-db",
+    text: "switch to the staging database",
+    expected: "steer",
+    examples: [{ text: "use staging instead of production", route: "steer" }],
+  },
+];
+
 const apiKey = process.env.TYPESAFE_API_KEY;
 if (!apiKey) {
   console.error("Set TYPESAFE_API_KEY to run the live Jev eval.");
@@ -88,6 +103,21 @@ if (!apiKey) {
     target: { exactAccuracyAtLeast: 0.8, falseStops: 0 },
   };
 
-  console.log(JSON.stringify(result, null, 2));
+  const personalized = [];
+  for (const testCase of personalizedCases) {
+    const [baseline, guided] = await Promise.all([
+      classifyMessageDetailed(testCase.text, apiKey),
+      classifyMessageDetailed(testCase.text, apiKey, fetch, testCase.examples),
+    ]);
+    personalized.push({
+      id: testCase.id,
+      expected: testCase.expected,
+      baseline: baseline.route,
+      withExamples: guided.route,
+      improved: baseline.route !== testCase.expected && guided.route === testCase.expected,
+    });
+  }
+
+  console.log(JSON.stringify({ ...result, personalizedComparison: personalized }, null, 2));
   if (falseStops > 0) process.exitCode = 1;
 }
