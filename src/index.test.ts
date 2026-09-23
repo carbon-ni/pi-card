@@ -41,17 +41,31 @@ describe("Jev auto-routing", () => {
     expect(debounceDelayFromEnv(value)).toBe(expected);
   });
 
+  it("waits until session_start before writing load diagnostics", async () => {
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    const harness = createHarness(false);
+    expect(() => harness.pi.appendEntry("probe", {})).toThrow("Action methods cannot be called during extension loading");
+    harness.pi.appendEntry.mockClear();
+
+    await harness.startSession("startup");
+    await harness.startSession("reload");
+
+    expect(harness.pi.appendEntry).toHaveBeenNthCalledWith(1, "pi-card.routing", expect.objectContaining({ event: "session_start", reason: "startup" }));
+    expect(harness.pi.appendEntry).toHaveBeenNthCalledWith(2, "pi-card.routing", expect.objectContaining({ event: "session_start", reason: "reload" }));
+  });
+
   it("writes privacy-safe structured routing diagnostics when debugging is enabled", async () => {
     vi.stubEnv("TYPESAFE_API_KEY", "private-api-key");
     vi.stubEnv("PI_CARD_DEBUG", "true");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("stop"));
     const harness = createHarness(false);
+    await harness.startSession();
 
     expect(await harness.input({ text: "private user text", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
 
     const entries = harness.pi.appendEntry.mock.calls.map(([, data]) => data);
     expect(entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ event: "loaded", apiKeyConfigured: true, debounceEnabled: false }),
+      expect.objectContaining({ event: "session_start", apiKeyConfigured: true, debounceEnabled: false }),
       expect.objectContaining({ event: "input", branch: "immediate_interactive" }),
       expect.objectContaining({ event: "route", choice: "stop", outcome: "stop", confidence: 0.99 }),
       expect.objectContaining({ event: "action", action: "abort_and_queue", kind: "interrupt" }),
@@ -69,6 +83,7 @@ describe("Jev auto-routing", () => {
       json: async () => ({ answers: { route: { type: "choice", choice: "stop", confidence: 0.7, probabilities: { stop: 0.97, steer: 0.01, followUp: 0.01, unclear: 0.01 } } } }),
     } as Response);
     const harness = createHarness(false);
+    await harness.startSession();
     await harness.input({ text: "sensitive message", source: "interactive" }, harness.ctx);
     const entries = harness.pi.appendEntry.mock.calls.map(([, data]) => data);
     expect(entries).toContainEqual(expect.objectContaining({ event: "route", choice: "stop", outcome: "unclear", policy: "downgraded", confidence: 0.7 }));
@@ -80,6 +95,7 @@ describe("Jev auto-routing", () => {
     vi.stubEnv("PI_CARD_DEBUG", "true");
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("private detail", "AbortError"));
     const harness = createHarness(false);
+    await harness.startSession();
     await harness.input({ text: "sensitive message", source: "interactive" }, harness.ctx);
     expect(JSON.stringify(harness.pi.appendEntry.mock.calls)).toContain('"failure":"timeout"');
     expect(JSON.stringify(harness.pi.appendEntry.mock.calls)).not.toContain("private detail");
@@ -89,6 +105,7 @@ describe("Jev auto-routing", () => {
     vi.stubEnv("TYPESAFE_API_KEY", "test-key");
     vi.stubEnv("PI_CARD_DEBUG", "true");
     const harness = createHarness(false);
+    await harness.startSession();
     await harness.input({ text: "**private prefix body", source: "interactive" }, harness.ctx);
     await harness.input({ text: "private attachment body", images: [{}], source: "interactive" }, harness.ctx);
     await harness.input({ text: "private extension body", source: "extension" }, harness.ctx);
@@ -107,6 +124,7 @@ describe("Jev auto-routing", () => {
     vi.stubEnv("PI_CARD_DEBUG", "true");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
     const harness = createHarness(false);
+    await harness.startSession();
     harness.pi.appendEntry.mockImplementation(() => { throw new Error("diagnostic sink failed"); });
     expect(await harness.input({ text: "fix this", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("fix this", { deliverAs: "steer" });
@@ -125,6 +143,7 @@ describe("Jev auto-routing", () => {
     vi.stubEnv("PI_CARD_DEBUG", "true");
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("secret error text"));
     const harness = createHarness(false);
+    await harness.startSession();
     expect(await harness.input({ text: "private user text", source: "interactive" }, harness.ctx)).toEqual({ action: "continue" });
     const serialized = JSON.stringify(harness.pi.appendEntry.mock.calls);
     expect(serialized).toContain('"failure":"classifier_error"');
@@ -727,10 +746,13 @@ function routeResponse(choice: string): Response {
 
 function createHarness(initialIdle: boolean) {
   let idle = initialIdle;
+  let actionsReady = false;
   const handlers = new Map<string, (...args: any[]) => any>();
   const pi = {
     on: vi.fn((name: string, handler: (...args: any[]) => any) => handlers.set(name, handler)),
-    appendEntry: vi.fn(),
+    appendEntry: vi.fn((_type: string, _data?: unknown) => {
+      if (!actionsReady) throw new Error("Action methods cannot be called during extension loading");
+    }),
     sendUserMessage: vi.fn(),
   };
   const ctx = { isIdle: vi.fn(() => idle), abort: vi.fn(), ui: { notify: vi.fn() } };
@@ -741,6 +763,10 @@ function createHarness(initialIdle: boolean) {
     input: handlers.get("input")!,
     settled: handlers.get("agent_settled")!,
     shutdown: handlers.get("session_shutdown")!,
+    async startSession(reason = "startup") {
+      actionsReady = true;
+      return handlers.get("session_start")!({ type: "session_start", reason }, ctx);
+    },
     setIdle(value: boolean) { idle = value; },
   };
 }

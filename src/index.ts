@@ -39,7 +39,8 @@ export default function registerCard(pi: ExtensionAPI): void {
   const internalDeliveries = new Map<string, number>();
   let routingQueue = Promise.resolve();
   const apiKey = process.env.TYPESAFE_API_KEY;
-  const debounceEnabled = process.env.PI_CARD_DEBOUNCE_ENABLED === "true" && Boolean(apiKey);
+  const debounceRequested = process.env.PI_CARD_DEBOUNCE_ENABLED === "true";
+  const debounceEnabled = debounceRequested && Boolean(apiKey);
   const debounceDelay = debounceDelayFromEnv(process.env.PI_CARD_DEBOUNCE_MS);
   const debugEnabled = process.env.PI_CARD_DEBUG === "true";
   const diagnostic = (event: string, details: Record<string, string | number | boolean> = {}): void => {
@@ -50,14 +51,6 @@ export default function registerCard(pi: ExtensionAPI): void {
       // Diagnostics must never change message routing behavior.
     }
   };
-
-  diagnostic("loaded", {
-    apiKeyConfigured: Boolean(apiKey),
-    routingEnabled: Boolean(apiKey),
-    debounceRequested: process.env.PI_CARD_DEBOUNCE_ENABLED === "true",
-    debounceEnabled,
-    debounceDelayMs: debounceDelay,
-  });
 
   const sendUserMessage = async (
     text: string,
@@ -147,6 +140,17 @@ export default function registerCard(pi: ExtensionAPI): void {
   const debouncer = debounceEnabled
     ? new TimeGapDebouncer<InputResult, any>(debounceDelay, (text, ctx) => routeText(text, ctx, true))
     : undefined;
+
+  pi.on("session_start", (event) => {
+    diagnostic("session_start", {
+      reason: event.reason,
+      apiKeyConfigured: Boolean(apiKey),
+      routingEnabled: Boolean(apiKey),
+      debounceRequested,
+      debounceEnabled,
+      debounceDelayMs: debounceDelay,
+    });
+  });
 
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") {
