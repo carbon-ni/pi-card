@@ -57,7 +57,7 @@ Without `TYPESAFE_API_KEY`, ordinary messages without a prefix pass through unch
 
 ### Routing diagnostics
 
-Set `PI_CARD_DEBUG=true` to append structured `pi-card.routing` records to the local Pi session. Records show config state, input branch, Jev choice and confidence-policy outcome, safe failure category, and delivery or queue action. They never include message text, API keys, or raw error details. Diagnostics are off by default.
+Set `PI_CARD_DEBUG=true` to append structured `pi-card.routing` records to the local Pi session. Records show config state, input branch, Jev choice and confidence-policy outcome, safe failure category, and delivery or queue action. A `routeId` links each route or failure record to its resulting action. They never include message text, API keys, or raw error details. Diagnostics are off by default.
 
 The config record is written on every session start, including reloads. To inspect records, run this in Pi's bash tool:
 

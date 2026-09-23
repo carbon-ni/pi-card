@@ -38,6 +38,7 @@ export default function registerCard(pi: ExtensionAPI): void {
   const queue: QueueEntry[] = [];
   const internalDeliveries = new Map<string, number>();
   let routingQueue = Promise.resolve();
+  let nextRouteId = 1;
   const apiKey = process.env.TYPESAFE_API_KEY;
   const debounceRequested = process.env.PI_CARD_DEBOUNCE_ENABLED === "true";
   const debounceEnabled = debounceRequested && Boolean(apiKey);
@@ -68,6 +69,7 @@ export default function registerCard(pi: ExtensionAPI): void {
   };
 
   const routeText = (text: string, ctx: any, combinedFallback = false): Promise<InputResult> => {
+    const routeId = nextRouteId++;
     const routeTask = routingQueue.then(async () => {
       let decision;
       try {
@@ -77,16 +79,17 @@ export default function registerCard(pi: ExtensionAPI): void {
           ? "timeout"
           : "classifier_error";
         diagnostic("classifier_failure", {
+          routeId,
           failure,
           fallback: combinedFallback ? "safe_delivery" : "native_input",
         });
         if (!combinedFallback) {
           // Preserve Pi's native behavior when routing is unavailable.
-          diagnostic("action", { action: "native_pass_through", reason: failure });
+          diagnostic("action", { routeId, action: "native_pass_through", reason: failure });
           return { action: "continue" as const };
         }
         const mode = ctx.isIdle() ? "normal" : "steer";
-        diagnostic("action", { action: "safe_delivery", mode });
+        diagnostic("action", { routeId, action: "safe_delivery", mode });
         if (ctx.isIdle()) await sendUserMessage(text);
         else await sendUserMessage(text, { deliverAs: "steer" });
         return { action: "handled" as const };
@@ -94,6 +97,7 @@ export default function registerCard(pi: ExtensionAPI): void {
 
       const route = decision.route;
       diagnostic("route", {
+        routeId,
         choice: decision.choice,
         outcome: route,
         policy: decision.choice === route ? "accepted" : "downgraded",
@@ -103,32 +107,32 @@ export default function registerCard(pi: ExtensionAPI): void {
       if (route === "unclear") {
         if (ctx.isIdle()) {
           if (combinedFallback) {
-            diagnostic("action", { action: "deliver", mode: "normal", reason: "unclear_while_idle" });
+            diagnostic("action", { routeId, action: "deliver", mode: "normal", reason: "unclear_while_idle" });
             await sendUserMessage(text);
             return { action: "handled" as const };
           }
-          diagnostic("action", { action: "native_pass_through", reason: "unclear_while_idle" });
+          diagnostic("action", { routeId, action: "native_pass_through", reason: "unclear_while_idle" });
           return { action: "continue" as const };
         }
         queue.push({ kind: "followUp", message: text });
-        diagnostic("action", { action: "queue", kind: "followUp", reason: "unclear_while_active" });
+        diagnostic("action", { routeId, action: "queue", kind: "followUp", reason: "unclear_while_active" });
         ctx.ui.notify("Unclear intent; queued as a follow-up", "info");
         return { action: "handled" as const };
       }
 
       if (ctx.isIdle()) {
-        diagnostic("action", { action: "deliver", mode: "normal", reason: "idle" });
+        diagnostic("action", { routeId, action: "deliver", mode: "normal", reason: "idle" });
         await sendUserMessage(text);
         return { action: "handled" as const };
       }
       if (route === "stop") {
         queue.push({ kind: "interrupt", message: text });
-        diagnostic("action", { action: "abort_and_queue", kind: "interrupt" });
+        diagnostic("action", { routeId, action: "abort_and_queue", kind: "interrupt" });
         ctx.abort();
         ctx.ui.notify("Current work interrupted", "warning");
       } else {
         const mode = route === "steer" ? "steer" : "followUp";
-        diagnostic("action", { action: "deliver", mode, reason: "jev_route" });
+        diagnostic("action", { routeId, action: "deliver", mode, reason: "jev_route" });
         await sendUserMessage(text, { deliverAs: mode });
       }
       return { action: "handled" as const };

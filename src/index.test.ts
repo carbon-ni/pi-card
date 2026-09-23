@@ -71,6 +71,9 @@ describe("Jev auto-routing", () => {
       expect.objectContaining({ event: "route", choice: "stop", outcome: "stop", confidence: 0.99 }),
       expect.objectContaining({ event: "action", action: "abort_and_queue", kind: "interrupt" }),
     ]));
+    const routeEntry = entries.find((entry: any) => entry.event === "route") as any;
+    const actionEntry = entries.find((entry: any) => entry.action === "abort_and_queue") as any;
+    expect(actionEntry.routeId).toBe(routeEntry.routeId);
     const serialized = JSON.stringify(entries);
     expect(serialized).not.toContain("private user text");
     expect(serialized).not.toContain("private-api-key");
