@@ -18,4 +18,5 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run test:package-verifier
+      - run: npm run test:release-publish
       - run: npm run verify:package

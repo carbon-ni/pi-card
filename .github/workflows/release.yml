@@ -11,8 +11,6 @@ concurrency:
 jobs:
   quality-gate:
     runs-on: ubuntu-latest
-    outputs:
-      tarball: ${{ steps.pack.outputs.tarball }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,6 +23,15 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run test:package-verifier
+      - run: npm run test:release-publish
+      - name: Verify release identity
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "v$version"
+          test -n "$RELEASE_NAME"
       - id: pack
         run: |
           mkdir -p .release
@@ -33,7 +40,6 @@ jobs:
           tarball=".release/$filename"
           test -f "$tarball"
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
-          echo "$tarball" > .release/tarball-path
       - name: Verify canonical package
         run: npm run verify:package -- "${{ steps.pack.outputs.tarball }}"
       - name: Record artifact checksum
@@ -46,12 +52,39 @@ jobs:
             .release/SHA256SUMS
           if-no-files-found: error
 
-  publish:
-    if: vars.PI_CARD_NPM_PUBLISH_ENABLED == 'true'
+  attach-github-assets:
     needs: quality-gate
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifact
+          path: .release
+      - name: Verify artifact checksum
+        run: cd .release && sha256sum -c SHA256SUMS
+      - name: Attach or verify canonical release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          tarball="$(find .release -name '*.tgz' -print -quit)"
+          test -n "$tarball"
+          node scripts/release-publish.mjs --github-assets-only "$tarball"
+
+  publish-npm:
+    if: vars.PI_CARD_NPM_PUBLISH_ENABLED == 'true'
+    needs: [quality-gate, attach-github-assets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -61,33 +94,22 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      - name: Install trusted-publishing-capable npm
+        run: npm install --global npm@11.5.1
       - uses: actions/download-artifact@v4
         with:
           name: release-artifact
           path: .release
-      - name: Verify release identity
+      - name: Verify artifact checksum
+        run: cd .release && sha256sum -c SHA256SUMS
+      - name: Publish or resume the identical npm artifact
         env:
+          QUALITY_GATE_RESULT: ${{ needs.quality-gate.result }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_NAME: ${{ github.event.release.name }}
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          test "$RELEASE_TAG" = "v$version"
-          test -n "$RELEASE_NAME"
-      - name: Verify and select canonical tarball
-        run: |
-          (cd .release && sha256sum -c SHA256SUMS)
-          tarball="$(find .release -name '*.tgz' -print -quit)"
-          test -n "$tarball"
-          echo "TARBALL=$tarball" >> "$GITHUB_ENV"
-      - name: Publish to npm using configured trusted publishing
-        env:
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
-          npm_tag=latest
-          if [ "$RELEASE_PRERELEASE" = "true" ]; then npm_tag=next; fi
-          npm publish "$TARBALL" --access public --tag "$npm_tag"
-      - name: Attach canonical package and checksum to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" "$TARBALL" .release/SHA256SUMS
+          tarball="$(find .release -name '*.tgz' -print -quit)"
+          test -n "$tarball"
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then NPM_TAG=next; else NPM_TAG=latest; fi
+          export NPM_TAG
+          node scripts/release-publish.mjs "$tarball"
