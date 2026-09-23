@@ -9,7 +9,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const temp = await mkdtemp(path.join(os.tmpdir(), "pi-card-package-"));
 const allowed = (file) =>
-  file === "package.json" || file === "README.md" || file.startsWith("src/") || file.startsWith("docs/");
+  file === "package.json" || file === "README.md" || file === "LICENSE" || file.startsWith("src/") || file.startsWith("docs/");
 
 try {
   const requestedTarball = process.argv[2];
@@ -33,7 +33,7 @@ try {
     .map((file) => file.replace(/^package\//, "").replace(/\/$/, ""));
   const unexpected = packedFiles.find((file) => !allowed(file));
   if (unexpected) throw new Error(`Unexpected packed file: ${unexpected}`);
-  for (const required of ["package.json", "README.md", "src/index.ts", "src/router.ts", "docs/configuration.md"]) {
+  for (const required of ["package.json", "README.md", "LICENSE", "src/index.ts", "src/router.ts", "docs/configuration.md"]) {
     if (!packedFiles.includes(required)) throw new Error(`Required packed file missing: ${required}`);
   }
   if (packedFiles.some((file) => /(^|\/)(\.pi|\.tmp|tests?|node_modules)(\/|$)/i.test(file) || /\.(test|spec)\.[cm]?tsx?$/.test(file))) {
@@ -46,6 +46,7 @@ try {
   await execFile("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", "--legacy-peer-deps", tarball], { cwd: consumer });
   const installed = path.join(consumer, "node_modules", packageJson.name);
   const consumerManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
+  if (consumerManifest.license !== "MIT") throw new Error("Installed package must declare the MIT license");
   if (consumerManifest.pi?.extensions?.[0] !== "./src/index.ts") {
     throw new Error("Installed package does not declare the expected Pi extension entrypoint");
   }

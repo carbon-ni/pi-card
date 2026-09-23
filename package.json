@@ -1,6 +1,7 @@
 {
   "name": "@carbon-ni/pi-card",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "More controls and better steering for Pi agent messages",
   "repository": {
     "type": "git",
@@ -16,6 +17,7 @@
   },
   "type": "module",
   "files": [
+    "LICENSE",
     "src/index.ts",
     "src/router.ts",
     "src/debounce.ts",
