@@ -40,7 +40,9 @@ Note: a plain message sent without a prefix is a native steer the moment you pre
 ~~
 ```
 
-Ordinary messages without a prefix pass through unchanged.
+Ordinary messages without a prefix pass through unchanged by default. If `TYPESAFE_API_KEY` is set, unprefixed interactive text is sent to TypeSafe Jev for delivery-timing classification: clear stop requests interrupt, clear corrections steer, clear follow-ups queue, and unclear intent is non-destructive (queued as a follow-up while active). Stop requires a high probability and confidence threshold. Inference has a 1.5-second timeout; network, timeout, or invalid-response failures preserve Pi's native input behavior. Prefix cards always take precedence; extension-injected input and messages with attachments bypass classification.
+
+**Privacy:** with the key configured, eligible raw text is transmitted to TypeSafe AI's API for classification. Do not enable this if that external processing is unsuitable for your messages. The key and message text are not logged by pi-card.
 
 ## API
 

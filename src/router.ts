@@ -1,0 +1,74 @@
+export type Route = "stop" | "steer" | "followUp" | "unclear";
+
+const ROUTES = ["stop", "steer", "followUp", "unclear"] as const;
+const STOP_THRESHOLD = 0.95;
+const ROUTE_CONFIDENCE_THRESHOLD = 0.8;
+export const ROUTE_TIMEOUT_MS = 1_500;
+
+type FetchLike = typeof fetch;
+
+export async function classifyMessage(
+  text: string,
+  apiKey: string,
+  fetcher: FetchLike = fetch,
+): Promise<Route> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ROUTE_TIMEOUT_MS);
+
+  try {
+    const response = await fetcher("https://api.typesafe.ai/v1/systemone", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: "jev-latest",
+        state: { message: text },
+        questions: {
+          route: {
+            type: "choice",
+            instructions: "Choose message delivery timing from the message text alone. Do not infer from runtime state or hidden metadata. Classify urgency to stop current work, immediate steering/correction, a request to handle after current work, or unclear/ordinary text.",
+            criteria: {
+              stop: "Clearly asks to stop or interrupt ongoing work now; require explicit, unambiguous urgency.",
+              steer: "Clearly asks for an immediate correction or direction while work is ongoing, without asking to stop it.",
+              followUp: "Clearly asks for additional work, a summary, or something to handle after the current work completes.",
+              unclear: "Ordinary conversation, ambiguous intent, or no clear timing signal.",
+            },
+          },
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(`TypeSafe returned HTTP ${response.status}`);
+
+    const payload: unknown = await response.json();
+    if (!isRecord(payload) || !isRecord(payload.answers) || !isRecord(payload.answers.route)) {
+      throw new Error("Invalid TypeSafe response");
+    }
+    const answer = payload.answers.route;
+    if (
+      answer.type !== "choice" ||
+      typeof answer.choice !== "string" ||
+      !ROUTES.includes(answer.choice as Route) ||
+      typeof answer.confidence !== "number" ||
+      !Number.isFinite(answer.confidence) ||
+      !isRecord(answer.probabilities) ||
+      ROUTES.some((route) => typeof answer.probabilities[route] !== "number" || !Number.isFinite(answer.probabilities[route]))
+    ) throw new Error("Invalid TypeSafe route answer");
+
+    const route = answer.choice as Route;
+    if (route === "stop") {
+      return answer.probabilities.stop >= STOP_THRESHOLD && answer.confidence >= ROUTE_CONFIDENCE_THRESHOLD
+        ? "stop"
+        : "unclear";
+    }
+    return answer.confidence >= ROUTE_CONFIDENCE_THRESHOLD ? route : "unclear";
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null;
+}
