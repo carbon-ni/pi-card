@@ -31,7 +31,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "eval:jev": "node --experimental-strip-types scripts/eval-jev.ts",
-    "verify:package": "node scripts/verify-package.mjs"
+    "verify:package": "node scripts/verify-package.mjs",
+    "test:package-verifier": "node --test scripts/verify-package-check.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.82.0 <1.0.0"

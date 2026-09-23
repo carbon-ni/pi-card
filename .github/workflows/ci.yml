@@ -17,4 +17,5 @@ jobs:
       - run: npm ci --legacy-peer-deps
       - run: npm run lint
       - run: npm test
+      - run: npm run test:package-verifier
       - run: npm run verify:package

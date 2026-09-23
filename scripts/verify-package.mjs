@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -54,13 +54,40 @@ try {
     "install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock",
     "--legacy-peer-deps", "@earendil-works/pi-coding-agent@0.82.0",
   ], { cwd: consumer });
-  const pi = path.join(consumer, "node_modules", ".bin", process.platform === "win32" ? "pi.cmd" : "pi");
-  await execFile(pi, ["--no-extensions", "--extension", path.join(installed, "src/index.ts"), "--help"], {
+  const agentDir = path.join(temp, "agent-config");
+  await mkdir(agentDir);
+  const smoke = path.join(consumer, "verify-extension-load.mjs");
+  await writeFile(smoke, `
+    import path from "node:path";
+    import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+    const extensionPath = path.resolve(process.env.PI_CARD_EXTENSION);
+    const loader = new DefaultResourceLoader({
+      cwd: process.cwd(),
+      agentDir: process.env.PI_CARD_AGENT_DIR,
+      additionalExtensionPaths: [extensionPath],
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+    });
+    await loader.reload({ resolveProjectTrust: async () => true });
+    const result = loader.getExtensions();
+    if (result.errors.length) throw new Error(JSON.stringify(result.errors));
+    const loaded = result.extensions.find((extension) => extension.resolvedPath === extensionPath);
+    if (!loaded?.handlers.has("input") || !loaded.handlers.has("agent_settled")) {
+      throw new Error("Pi host did not load Pi Card's registered input hooks");
+    }
+  `);
+  await execFile(process.execPath, [smoke], {
     cwd: consumer,
-    env: { ...process.env, PI_OFFLINE: "1" },
+    env: {
+      ...process.env,
+      PI_CARD_EXTENSION: path.join(installed, "src/index.ts"),
+      PI_CARD_AGENT_DIR: agentDir,
+    },
   });
 
-  console.log(`Package verification passed: ${packageJson.name}@${packageJson.version} (${packedFiles.length} files, Pi host load)`);
+  console.log(`Package verification passed: ${packageJson.name}@${packageJson.version} (${packedFiles.length} files, Pi extension hooks loaded)`);
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

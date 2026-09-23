@@ -24,6 +24,7 @@ jobs:
       - run: npm ci --legacy-peer-deps
       - run: npm run lint
       - run: npm test
+      - run: npm run test:package-verifier
       - id: pack
         run: |
           mkdir -p .release
@@ -69,7 +70,8 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_NAME: ${{ github.event.release.name }}
         run: |
-          test "$RELEASE_TAG" = "v$(node -p \"require('./package.json').version\")"
+          version="$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "v$version"
           test -n "$RELEASE_NAME"
       - name: Verify and select canonical tarball
         run: |

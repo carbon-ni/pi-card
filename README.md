@@ -6,6 +6,20 @@
 
 A nod to Picard: Pi Card figures out what you want to do with a message while Pi is working. Correct the current run, stop it, or leave something for later. You can just type. When timing must be exact, use a card.
 
+## Install after release
+
+These commands become available after the `v0.1.0` release is published. They are not usable yet:
+
+```sh
+pi install npm:@carbon-ni/pi-card
+```
+
+To install the tagged source instead:
+
+```sh
+pi install git:github.com/carbon-ni/pi-card@v0.1.0
+```
+
 ## Try it
 
 From this checkout:
