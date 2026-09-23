@@ -44,6 +44,10 @@ Ordinary messages without a prefix pass through unchanged by default. If `TYPESA
 
 **Privacy:** with the key configured, eligible raw text is transmitted to TypeSafe AI's API for classification. Do not enable this if that external processing is unsuitable for your messages. The key and message text are not logged by pi-card.
 
+### Optional time-gap debounce
+
+Set `PI_CARD_DEBOUNCE_ENABLED=true` to combine consecutive eligible unprefixed interactive text submissions and route them together after a quiet period. It requires `TYPESAFE_API_KEY`; otherwise the existing behavior is unchanged. The default is disabled, preserving immediate Jev routing when a key is configured. `PI_CARD_DEBOUNCE_MS` sets the quiet period in milliseconds (default `600`; positive integers are capped at `5000`). A batch also flushes after five seconds or 16,000 characters to prevent indefinite delay or unbounded buffering. Combined messages retain input order, separated by newlines. Prefix cards, extension input, and image-bearing input flush any pending text before bypassing debounce.
+
 ## API
 
 ```ts

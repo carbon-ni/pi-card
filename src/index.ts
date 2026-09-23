@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { debounceDelayFromEnv, TimeGapDebouncer } from "./debounce.js";
 import { classifyMessage } from "./router.js";
 
 export type SteeringTrigger =
@@ -7,6 +8,7 @@ export type SteeringTrigger =
   | { kind: "brainstorm"; message: string };
 
 type QueueEntry = SteeringTrigger;
+type InputResult = { action: "continue" | "handled" };
 
 export function parseTrigger(text: string): SteeringTrigger | undefined {
   const prefix = text.slice(0, 2);
@@ -35,11 +37,61 @@ function deliveredMessage(entry: QueueEntry): string {
 export default function registerCard(pi: ExtensionAPI): void {
   const queue: QueueEntry[] = [];
   let routingQueue = Promise.resolve();
+  const apiKey = process.env.TYPESAFE_API_KEY;
+  const debounceEnabled = process.env.PI_CARD_DEBOUNCE_ENABLED === "true" && Boolean(apiKey);
+  const debounceDelay = debounceDelayFromEnv(process.env.PI_CARD_DEBOUNCE_MS);
+
+  const routeText = (text: string, ctx: any, combinedFallback = false): Promise<InputResult> => {
+    const routeTask = routingQueue.then(async () => {
+      let route;
+      try {
+        route = await classifyMessage(text, apiKey!);
+              } catch {
+          if (!combinedFallback) {
+            // Preserve Pi's native behavior when routing is unavailable.
+            return { action: "continue" as const };
+          }
+          if (ctx.isIdle()) pi.sendUserMessage(text);
+          else pi.sendUserMessage(text, { deliverAs: "steer" });
+          return { action: "handled" as const };
+        }
+
+      if (route === "unclear") {
+        if (ctx.isIdle()) return { action: "continue" as const };
+        queue.push({ kind: "followUp", message: text });
+        ctx.ui.notify("Unclear intent; queued as a follow-up", "info");
+        return { action: "handled" as const };
+      }
+
+      if (ctx.isIdle()) {
+        pi.sendUserMessage(text);
+        return { action: "handled" as const };
+      }
+      if (route === "stop") {
+        queue.push({ kind: "interrupt", message: text });
+        ctx.abort();
+        ctx.ui.notify("Current work interrupted", "warning");
+      } else {
+        pi.sendUserMessage(text, { deliverAs: route === "steer" ? "steer" : "followUp" });
+      }
+      return { action: "handled" as const };
+    });
+    routingQueue = routeTask.then(() => undefined, () => undefined);
+    return routeTask;
+  };
+
+  const debouncer = debounceEnabled
+    ? new TimeGapDebouncer<InputResult, any>(debounceDelay, (text, ctx) => routeText(text, ctx, true))
+    : undefined;
 
   pi.on("input", async (event, ctx) => {
-    if (event.source === "extension") return { action: "continue" };
+    if (event.source === "extension") {
+      await debouncer?.flush();
+      return { action: "continue" };
+    }
 
     if (event.text === "~~") {
+      await debouncer?.flush();
       const last = queue[queue.length - 1];
       if (!last || last.kind !== "followUp") {
         const reason = last ? "Only && cards can be flipped" : "Nothing queued to flip";
@@ -54,55 +106,29 @@ export default function registerCard(pi: ExtensionAPI): void {
     }
 
     const trigger = parseTrigger(event.text);
-    if (!trigger) {
-      const apiKey = process.env.TYPESAFE_API_KEY;
-      if (!apiKey || event.source !== "interactive" || event.images?.length) return { action: "continue" };
+    if (trigger) {
+      await debouncer?.flush();
+      if (ctx.isIdle()) {
+        return { action: "transform", text: immediateMessage(trigger) };
+      }
 
-      const routeTask = routingQueue.then(async () => {
-        let route;
-        try {
-          route = await classifyMessage(event.text, apiKey);
-        } catch {
-          // Preserve Pi's native behavior when routing is unavailable.
-          return { action: "continue" as const };
-        }
-
-        if (route === "unclear") {
-          if (ctx.isIdle()) return { action: "continue" as const };
-          queue.push({ kind: "followUp", message: event.text });
-          ctx.ui.notify("Unclear intent; queued as a follow-up", "info");
-          return { action: "handled" as const };
-        }
-
-        if (ctx.isIdle()) {
-          pi.sendUserMessage(event.text);
-          return { action: "handled" as const };
-        }
-        if (route === "stop") {
-          queue.push({ kind: "interrupt", message: event.text });
-          ctx.abort();
-          ctx.ui.notify("Current work interrupted", "warning");
-        } else {
-          pi.sendUserMessage(event.text, { deliverAs: route === "steer" ? "steer" : "followUp" });
-        }
-        return { action: "handled" as const };
-      });
-      routingQueue = routeTask.then(() => undefined, () => undefined);
-      return routeTask;
+      queue.push(trigger);
+      if (trigger.kind === "followUp") {
+        ctx.ui.notify("Follow-up queued", "info");
+      } else {
+        ctx.abort();
+        ctx.ui.notify("Current work interrupted", "warning");
+      }
+      return { action: "handled" };
     }
 
-    if (ctx.isIdle()) {
-      return { action: "transform", text: immediateMessage(trigger) };
+    if (!apiKey || event.source !== "interactive" || event.images?.length) {
+      await debouncer?.flush();
+      return { action: "continue" };
     }
 
-    queue.push(trigger);
-    if (trigger.kind === "followUp") {
-      ctx.ui.notify("Follow-up queued", "info");
-    } else {
-      ctx.abort();
-      ctx.ui.notify("Current work interrupted", "warning");
-    }
-    return { action: "handled" };
+    if (debouncer) return debouncer.add(event.text, ctx);
+    return routeText(event.text, ctx);
   });
 
   pi.on("agent_settled", (_event, ctx) => {
