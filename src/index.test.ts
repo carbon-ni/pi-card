@@ -129,6 +129,34 @@ describe("Jev auto-routing", () => {
     expect(sent).toEqual(["earlier input", oversized]);
   });
 
+  it("keeps input after oversized text behind it while earlier routing is pending", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
+    vi.useFakeTimers();
+    const resolvers: Array<(response: Response) => void> = [];
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise((resolve) => resolvers.push(resolve)));
+    const harness = createHarness(false);
+    expect(await harness.input({ text: "first", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    const oversized = "x".repeat(16_001);
+    expect(await harness.input({ text: oversized, source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(await harness.input({ text: "third", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+
+    await vi.advanceTimersByTimeAsync(600);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body)).state.message).toBe("first");
+    resolvers[0](routeResponse("followUp"));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body)).state.message).toBe(oversized);
+    resolvers[1](routeResponse("followUp"));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(String(fetcher.mock.calls[2][1]?.body)).state.message).toBe("third");
+    resolvers[2](routeResponse("followUp"));
+  });
+
   it("flushes and clears the pending timer during session shutdown", async () => {
     vi.stubEnv("TYPESAFE_API_KEY", "test-key");
     vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
@@ -140,6 +168,47 @@ describe("Jev auto-routing", () => {
     await harness.shutdown({}, harness.ctx);
     expect(vi.getTimerCount()).toBe(0);
     expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("pending before shutdown", { deliverAs: "followUp" });
+  });
+
+  it("does not deadlock when routed delivery re-enters as extension input", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    harness.pi.sendUserMessage.mockImplementation(async (text: string) => {
+      expect(await harness.input({ text, source: "extension" }, harness.ctx)).toEqual({ action: "continue" });
+    });
+    expect(await harness.input({ text: "deliver this", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledOnce();
+  });
+
+  it("waits for an in-flight batch before processing a prefix card", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
+    vi.useFakeTimers();
+    let resolveRoute!: (response: Response) => void;
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise((resolve) => { resolveRoute = resolve; }));
+    const harness = createHarness(false);
+    expect(await harness.input({ text: "earlier", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(fetcher).toHaveBeenCalledOnce();
+
+    let cardHandled = false;
+    const card = harness.input({ text: "&&later", source: "interactive" }, harness.ctx).then((result: { action: string }) => {
+      cardHandled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(cardHandled).toBe(false);
+
+    resolveRoute(routeResponse("steer"));
+    expect(await card).toEqual({ action: "handled" });
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("earlier", { deliverAs: "steer" });
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).toHaveBeenNthCalledWith(2, "later");
   });
 
   it("flushes debounced text before prefix-card input", async () => {

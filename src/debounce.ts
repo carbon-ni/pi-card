@@ -30,8 +30,8 @@ export class TimeGapDebouncer<T, C> {
 
   add(text: string, context: C): Promise<T> {
     if (text.length > MAX_BATCH_CHARS) {
-      const pending = this.current ? this.flushBatch(this.current) : undefined;
-      return pending ? pending.then(() => this.enqueue(text, context)) : this.enqueue(text, context);
+      if (this.current) void this.flushBatch(this.current);
+      return this.enqueue(text, context);
     }
 
     if (this.current && this.current.parts.join("\n\n").length + text.length + 2 > MAX_BATCH_CHARS) {
@@ -54,8 +54,9 @@ export class TimeGapDebouncer<T, C> {
     return result;
   }
 
-  flush(): Promise<T> | undefined {
-    return this.current ? this.flushBatch(this.current) : undefined;
+  flush(): Promise<void> {
+    if (this.current) void this.flushBatch(this.current);
+    return this.processQueue;
   }
 
   private enqueue(text: string, context: C): Promise<T> {

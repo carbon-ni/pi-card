@@ -36,10 +36,26 @@ function deliveredMessage(entry: QueueEntry): string {
 
 export default function registerCard(pi: ExtensionAPI): void {
   const queue: QueueEntry[] = [];
+  const internalDeliveries = new Map<string, number>();
   let routingQueue = Promise.resolve();
   const apiKey = process.env.TYPESAFE_API_KEY;
   const debounceEnabled = process.env.PI_CARD_DEBOUNCE_ENABLED === "true" && Boolean(apiKey);
   const debounceDelay = debounceDelayFromEnv(process.env.PI_CARD_DEBOUNCE_MS);
+
+  const sendUserMessage = async (
+    text: string,
+    options?: { deliverAs?: "steer" | "followUp" },
+  ): Promise<void> => {
+    internalDeliveries.set(text, (internalDeliveries.get(text) ?? 0) + 1);
+    try {
+      if (options) await pi.sendUserMessage(text, options);
+      else await pi.sendUserMessage(text);
+    } finally {
+      const remaining = (internalDeliveries.get(text) ?? 1) - 1;
+      if (remaining === 0) internalDeliveries.delete(text);
+      else internalDeliveries.set(text, remaining);
+    }
+  };
 
   const routeText = (text: string, ctx: any, combinedFallback = false): Promise<InputResult> => {
     const routeTask = routingQueue.then(async () => {
@@ -51,15 +67,15 @@ export default function registerCard(pi: ExtensionAPI): void {
           // Preserve Pi's native behavior when routing is unavailable.
           return { action: "continue" as const };
         }
-        if (ctx.isIdle()) pi.sendUserMessage(text);
-        else pi.sendUserMessage(text, { deliverAs: "steer" });
+        if (ctx.isIdle()) await sendUserMessage(text);
+        else await sendUserMessage(text, { deliverAs: "steer" });
         return { action: "handled" as const };
       }
 
       if (route === "unclear") {
         if (ctx.isIdle()) {
           if (combinedFallback) {
-            pi.sendUserMessage(text);
+            await sendUserMessage(text);
             return { action: "handled" as const };
           }
           return { action: "continue" as const };
@@ -70,7 +86,7 @@ export default function registerCard(pi: ExtensionAPI): void {
       }
 
       if (ctx.isIdle()) {
-        pi.sendUserMessage(text);
+        await sendUserMessage(text);
         return { action: "handled" as const };
       }
       if (route === "stop") {
@@ -78,7 +94,7 @@ export default function registerCard(pi: ExtensionAPI): void {
         ctx.abort();
         ctx.ui.notify("Current work interrupted", "warning");
       } else {
-        pi.sendUserMessage(text, { deliverAs: route === "steer" ? "steer" : "followUp" });
+        await sendUserMessage(text, { deliverAs: route === "steer" ? "steer" : "followUp" });
       }
       return { action: "handled" as const };
     });
@@ -92,6 +108,7 @@ export default function registerCard(pi: ExtensionAPI): void {
 
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") {
+      if (internalDeliveries.has(event.text)) return { action: "continue" };
       await debouncer?.flush();
       return { action: "continue" };
     }
@@ -106,7 +123,7 @@ export default function registerCard(pi: ExtensionAPI): void {
       }
 
       queue.pop();
-      pi.sendUserMessage(last.message, { deliverAs: "steer" });
+      await sendUserMessage(last.message, { deliverAs: "steer" });
       ctx.ui.notify(`Flipped to steer: ${last.message}`, "info");
       return { action: "handled" };
     }
@@ -144,10 +161,10 @@ export default function registerCard(pi: ExtensionAPI): void {
     await debouncer?.flush();
   });
 
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", async (_event, ctx) => {
     if (!ctx.isIdle() || queue.length === 0) return;
 
     const entries = queue.splice(0);
-    pi.sendUserMessage(entries.map(deliveredMessage).join("\n\n"));
+    await sendUserMessage(entries.map(deliveredMessage).join("\n\n"));
   });
 }
