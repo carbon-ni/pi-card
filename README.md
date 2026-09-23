@@ -2,7 +2,9 @@
 
 <img height="150" alt="image" src="https://github.com/user-attachments/assets/d2e4e0af-4e88-47db-be32-4a8d9ff0e7a8" align="left" />
 
-Pi Card figures out what you want to do with a message while Pi is working: correct the current run, stop it, or leave something for later. You can just type. When timing must be exact, use a card.
+**More controls. Better steering. Engage!**
+
+A nod to Picard: Pi Card figures out what you want to do with a message while Pi is working. Correct the current run, stop it, or leave something for later. You can just type. When timing must be exact, use a card.
 
 ## Try it
 
