@@ -57,7 +57,7 @@ Without `TYPESAFE_API_KEY`, ordinary messages without a prefix pass through unch
 
 ### Personal routing examples
 
-Optionally create `~/.pi/agent/pi-card.json`:
+Optionally create `pi-card.json` in Pi's agent config directory (normally `~/.pi/agent`; respects `PI_CODING_AGENT_DIR`):
 
 ```json
 {

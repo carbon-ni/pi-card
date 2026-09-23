@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { openSync, readFileSync, fstatSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Route } from "./router.js";
@@ -9,18 +9,25 @@ const MAX_FILE_BYTES = 32_000;
 const MAX_EXAMPLES = 20;
 const MAX_TEXT_LENGTH = 1_000;
 
-export const routingExamplesPath = join(homedir(), ".pi", "agent", "pi-card.json");
+export function routingExamplesPath(agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent")): string {
+  return join(agentDir, "pi-card.json");
+}
 
-export function loadRoutingExamples(path = routingExamplesPath): RoutingExample[] {
+export function loadRoutingExamples(path = routingExamplesPath()): RoutingExample[] {
   let content: string;
+  let fd: number;
   try {
-    content = readFileSync(path, "utf8");
+    fd = openSync(path, "r");
   } catch (error) {
     if (isMissing(error)) return [];
     throw new Error("Unable to read routing configuration");
   }
-  if (Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES) {
-    throw new Error("Routing configuration exceeds size limit");
+  try {
+    if (fstatSync(fd).size > MAX_FILE_BYTES) throw new Error("Routing configuration exceeds size limit");
+    content = readFileSync(fd, "utf8");
+    if (Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES) throw new Error("Routing configuration exceeds size limit");
+  } finally {
+    closeSync(fd);
   }
 
   let parsed: unknown;

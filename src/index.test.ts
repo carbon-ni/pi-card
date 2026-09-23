@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import registerCard, { parseTrigger } from "./index.js";
 import { classifyMessage, classifyMessageDetailed } from "./router.js";
 import { debounceDelayFromEnv } from "./debounce.js";
-import { loadRoutingExamples } from "./routing-examples.js";
+import { loadRoutingExamples, routingExamplesPath } from "./routing-examples.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +34,18 @@ describe("parseTrigger", async () => {
 });
 
 describe("routing examples config", () => {
+  it("resolves config under Pi's configured agent directory", () => {
+    expect(routingExamplesPath("/custom/pi-agent")).toBe("/custom/pi-agent/pi-card.json");
+  });
+
+  it("rejects oversized files before parsing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-card-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, " ".repeat(32_001));
+    try { expect(() => loadRoutingExamples(path)).toThrow("exceeds size limit"); }
+    finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("sends examples as structured context, not instructions", async () => {
     const fetcher = vi.fn().mockResolvedValue(routeResponse("steer"));
     await classifyMessageDetailed("fix that now", "key", fetcher as any, [{ text: "please correct this", route: "steer" }]);
