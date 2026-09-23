@@ -87,6 +87,40 @@ describe("Jev auto-routing", () => {
     expect(debounceDelayFromEnv(value)).toBe(expected);
   });
 
+  it("routes with configured examples and keeps them out of diagnostics", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-card-agent-"));
+    writeFileSync(join(dir, "pi-card.json"), JSON.stringify({ examples: [{ text: "private example phrase", route: "steer" }] }));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    try {
+      await harness.input({ text: "private current message", source: "interactive" }, harness.ctx);
+      const request = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
+      expect(request.state.examples).toEqual([{ message: "private example phrase", expectedRoute: "steer" }]);
+      expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("private current message", { deliverAs: "steer" });
+      const diagnostics = JSON.stringify(harness.pi.appendEntry.mock.calls);
+      expect(diagnostics).not.toContain("private example phrase");
+      expect(diagnostics).not.toContain("private current message");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("ignores invalid config as a whole and preserves baseline request behavior", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-card-agent-"));
+    writeFileSync(join(dir, "pi-card.json"), JSON.stringify({ examples: [{ text: "valid row", route: "steer" }, { text: "invalid row", route: "bad" }] }));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    try {
+      await harness.input({ text: "current text", source: "interactive" }, harness.ctx);
+      expect(warning).toHaveBeenCalledWith("[pi-card] Invalid routing config; using default Jev routing.");
+      expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body)).state).toEqual({ message: "current text" });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("waits until session_start before writing load diagnostics", async () => {
     vi.stubEnv("PI_CARD_DEBUG", "true");
     const harness = createHarness(false);
