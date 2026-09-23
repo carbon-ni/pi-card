@@ -3,9 +3,10 @@
 From the repository root:
 
 ```sh
-npm install
+npm ci --legacy-peer-deps
 npm test
 npm run lint
+npm run verify:package
 pi -e ./src/index.ts
 ```
 
@@ -26,7 +27,7 @@ This is not a test of a full Pi session. Jev decisions can change between runs. 
 ## Extension API
 
 ```ts
-import registerCard, { parseTrigger, type SteeringTrigger } from "pi-card";
+import registerCard, { parseTrigger, type SteeringTrigger } from "@carbon-ni/pi-card";
 ```
 
 `registerCard(pi)` is the default export Pi loads. `parseTrigger(text)` returns `undefined` for an invalid or empty card, or a trigger with the message after its prefix:
@@ -39,3 +40,9 @@ type SteeringTrigger =
 ```
 
 The `~~` flip is handled by the input hook, not by `parseTrigger`.
+
+## Package and release preparation
+
+`npm run verify:package` packs the scoped package, checks its explicit file allowlist, then installs the tarball into a temporary consumer and verifies the Pi extension entrypoint. It excludes `.pi` state and tests. npm's current optional-peer resolver requires `--legacy-peer-deps`; use the committed lockfile and matching flag in CI.
+
+CI runs lint, unit tests, and package verification for pull requests and pushes to `main`. A GitHub `release.published` event runs the same quality gate at the release tag, packs one canonical tarball, and checks its SHA-256. The publish job is deliberately disabled unless repository variable `PI_CARD_NPM_PUBLISH_ENABLED` is exactly `true`. **Do not enable it until maintainers confirm ownership/access for `@carbon-ni/pi-card` and configure npm trusted publishing for this exact GitHub repository/workflow.** The workflow uses npm OIDC, publishes stable versions as `latest` and prereleases as `next`, and attaches the tarball/checksum to the GitHub release. npm versions are immutable; if a publish partially succeeds, verify npm and GitHub release assets before rerunning because this minimal workflow does not reconcile an already-published artifact. No release, tag, registry, or remote configuration has been created by this preparation.

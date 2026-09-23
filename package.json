@@ -1,16 +1,53 @@
 {
-  "name": "pi-card",
+  "name": "@carbon-ni/pi-card",
   "version": "0.1.0",
-  "private": true,
+  "description": "More controls and better steering for Pi agent messages",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/carbon-ni/pi-card"
+  },
+  "homepage": "https://github.com/carbon-ni/pi-card#readme",
+  "bugs": {
+    "url": "https://github.com/carbon-ni/pi-card/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "type": "module",
-  "pi": { "extensions": ["./src/index.ts"] },
-  "scripts": { "lint": "tsc --noEmit", "test": "vitest run",     "test:coverage": "vitest run --coverage",
-    "eval:jev": "node --experimental-strip-types scripts/eval-jev.ts" },
+  "files": [
+    "src/index.ts",
+    "src/router.ts",
+    "src/debounce.ts",
+    "src/routing-examples.ts",
+    "docs/",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "eval:jev": "node --experimental-strip-types scripts/eval-jev.ts",
+    "verify:package": "node scripts/verify-package.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.82.0 <1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.82.0",
     "@vitest/coverage-v8": "4.1.6",
     "typescript": "6.0.3",
     "vitest": "4.1.6"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }
