@@ -59,7 +59,13 @@ Without `TYPESAFE_API_KEY`, ordinary messages without a prefix pass through unch
 
 Set `PI_CARD_DEBUG=true` to append structured `pi-card.routing` records to the local Pi session. Records show config state, input branch, Jev choice and confidence-policy outcome, safe failure category, and delivery or queue action. They never include message text, API keys, or raw error details. Diagnostics are off by default.
 
-After enabling it, look for a `session_start` record in the session. If it is missing after restarting Pi, Pi may be loading a different copy of the extension; check the loaded extension path. This repository does not modify a global installation.
+The config record is written on every session start, including reloads. To inspect records, run this in Pi's bash tool:
+
+```sh
+jq -c 'select(.type == "custom" and .customType == "pi-card.routing") | {timestamp, data}' "$PI_SESSION_FILE"
+```
+
+If there is no `session_start` record after restarting Pi, check the loaded extension path. An older global copy will not emit this checkout's diagnostics. This repository does not modify a global installation.
 
 ### Optional time-gap debounce
 

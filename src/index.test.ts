@@ -44,6 +44,7 @@ describe("Jev auto-routing", () => {
   it("waits until session_start before writing load diagnostics", async () => {
     vi.stubEnv("PI_CARD_DEBUG", "true");
     const harness = createHarness(false);
+    expect(harness.pi.appendEntry).not.toHaveBeenCalled();
     expect(() => harness.pi.appendEntry("probe", {})).toThrow("Action methods cannot be called during extension loading");
     harness.pi.appendEntry.mockClear();
 
