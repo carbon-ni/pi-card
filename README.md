@@ -1,6 +1,6 @@
 # Pi Card
 
-<img width="124" height="100" alt="image" src="https://github.com/user-attachments/assets/d2e4e0af-4e88-47db-be32-4a8d9ff0e7a8" align="left" />  
+<img height="150" alt="image" src="https://github.com/user-attachments/assets/d2e4e0af-4e88-47db-be32-4a8d9ff0e7a8" align="left" />  
 
 Send a message while Pi is working and choose when it lands. Use a card for exact control, or let Jev route plain text when you configure it.
 
