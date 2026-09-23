@@ -14,7 +14,7 @@ export PI_CARD_DEBOUNCE_ENABLED=true
 export PI_CARD_DEBOUNCE_MS=600
 ```
 
-Without an API key, Pi keeps its native input behavior. With a key but debounce disabled, Jev routes each submitted message immediately. Debounce waits for silence before sending text to Jev. It is not infallible: the current small synthetic eval has one missed steer, reported below.
+No API key means Pi keeps its native input behavior. With a key but debounce off, Jev routes each message immediately. Debounce adds a quiet-window delay. Stop decisions are confidence-gated, but Jev can still miss a correction; the current synthetic eval has one miss, reported below.
 
 </br>
 
