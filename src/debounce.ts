@@ -21,6 +21,7 @@ export function debounceDelayFromEnv(value: string | undefined): number {
 
 export class TimeGapDebouncer<T, C> {
   private current?: PendingBatch<T, C>;
+  private processQueue = Promise.resolve();
 
   constructor(
     private readonly delayMs: number,
@@ -28,7 +29,10 @@ export class TimeGapDebouncer<T, C> {
   ) {}
 
   add(text: string, context: C): Promise<T> {
-    if (text.length > MAX_BATCH_CHARS) return this.process(text, context);
+    if (text.length > MAX_BATCH_CHARS) {
+      const pending = this.current ? this.flushBatch(this.current) : undefined;
+      return pending ? pending.then(() => this.enqueue(text, context)) : this.enqueue(text, context);
+    }
 
     if (this.current && this.current.parts.join("\n\n").length + text.length + 2 > MAX_BATCH_CHARS) {
       void this.flushBatch(this.current);
@@ -54,12 +58,18 @@ export class TimeGapDebouncer<T, C> {
     return this.current ? this.flushBatch(this.current) : undefined;
   }
 
+  private enqueue(text: string, context: C): Promise<T> {
+    const result = this.processQueue.then(() => this.process(text, context));
+    this.processQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   private flushBatch(batch: PendingBatch<T, C>): Promise<T> {
     if (batch.flushing) return batch.flushing;
     if (batch.timer) clearTimeout(batch.timer);
     if (this.current === batch) this.current = undefined;
 
-    batch.flushing = this.process(batch.parts.join("\n\n"), batch.context);
+    batch.flushing = this.enqueue(batch.parts.join("\n\n"), batch.context);
     batch.flushing.then(
       (result) => batch.waiters.forEach((resolve) => resolve(result)),
       () => batch.waiters.forEach((resolve) => resolve(undefined as T)),

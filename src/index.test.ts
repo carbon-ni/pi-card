@@ -116,6 +116,19 @@ describe("Jev auto-routing", () => {
     expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("buffered", { deliverAs: "steer" });
   });
 
+  it("routes oversized input after the earlier buffered batch", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("followUp"));
+    const harness = createHarness(false);
+    expect(await harness.input({ text: "earlier input", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    const oversized = "x".repeat(16_001);
+    expect(await harness.input({ text: oversized, source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    const sent = fetcher.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).state.message);
+    expect(sent).toEqual(["earlier input", oversized]);
+  });
+
   it("flushes and clears the pending timer during session shutdown", async () => {
     vi.stubEnv("TYPESAFE_API_KEY", "test-key");
     vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");

@@ -46,15 +46,15 @@ export default function registerCard(pi: ExtensionAPI): void {
       let route;
       try {
         route = await classifyMessage(text, apiKey!);
-              } catch {
-          if (!combinedFallback) {
-            // Preserve Pi's native behavior when routing is unavailable.
-            return { action: "continue" as const };
-          }
-          if (ctx.isIdle()) pi.sendUserMessage(text);
-          else pi.sendUserMessage(text, { deliverAs: "steer" });
-          return { action: "handled" as const };
+      } catch {
+        if (!combinedFallback) {
+          // Preserve Pi's native behavior when routing is unavailable.
+          return { action: "continue" as const };
         }
+        if (ctx.isIdle()) pi.sendUserMessage(text);
+        else pi.sendUserMessage(text, { deliverAs: "steer" });
+        return { action: "handled" as const };
+      }
 
       if (route === "unclear") {
         if (ctx.isIdle()) {

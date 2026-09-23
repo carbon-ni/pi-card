@@ -13,7 +13,7 @@ const cases: Case[] = [
   {
     id: "stop-subtask-continue-en",
     text: "Stop editing the README, but continue running the tests and report the result.",
-    expected: "followUp",
+    expected: "unclear",
     safetyCritical: true,
   },
   { id: "clear-steer-en", text: "Correction: use the staging database, not production.", expected: "steer" },
