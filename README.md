@@ -14,10 +14,22 @@ These commands become available after the `v0.1.0` release is published. They ar
 pi install npm:@carbon-ni/pi-card
 ```
 
+Update an existing npm installation with:
+
+```sh
+pi update npm:@carbon-ni/pi-card
+```
+
 To install the tagged source instead:
 
 ```sh
 pi install git:github.com/carbon-ni/pi-card@v0.1.0
+```
+
+To move a Git installation to another release tag, reinstall it with the new tag:
+
+```sh
+pi install git:github.com/carbon-ni/pi-card@vX.Y.Z
 ```
 
 ## Try it

@@ -92,7 +92,7 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.14.0
           registry-url: https://registry.npmjs.org
       - name: Install trusted-publishing-capable npm
         run: npm install --global npm@11.5.1
