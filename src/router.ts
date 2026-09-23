@@ -54,7 +54,13 @@ export async function classifyMessage(
       typeof answer.confidence !== "number" ||
       !Number.isFinite(answer.confidence) ||
       !isRecord(answer.probabilities) ||
-      ROUTES.some((route) => typeof answer.probabilities[route] !== "number" || !Number.isFinite(answer.probabilities[route]))
+      ROUTES.some((route) =>
+        typeof answer.probabilities[route] !== "number" ||
+        !Number.isFinite(answer.probabilities[route]) ||
+        answer.probabilities[route] < 0 ||
+        answer.probabilities[route] > 1
+      ) ||
+      Math.abs(ROUTES.reduce((sum, route) => sum + answer.probabilities[route], 0) - 1) > 0.02
     ) throw new Error("Invalid TypeSafe route answer");
 
     const route = answer.choice as Route;

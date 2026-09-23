@@ -35,7 +35,12 @@ describe("Jev auto-routing", async () => {
       ok: true,
       json: async () => ({ answers: { route: {
         type: "choice", choice, confidence,
-        probabilities: { stop: stopProbability, steer: 0.02, followUp: 0.01, unclear: 0.02 },
+        probabilities: {
+          stop: stopProbability,
+          steer: (1 - stopProbability) / 3,
+          followUp: (1 - stopProbability) / 3,
+          unclear: (1 - stopProbability) / 3,
+        },
       } } }),
     });
     await expect(classifyMessage("please stop", "secret", fetcher as any)).resolves.toBe(expected);
@@ -60,8 +65,25 @@ describe("Jev auto-routing", async () => {
     },
   );
 
+  it("aborts inference at the deadline", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }));
+    const pending = classifyMessage("hello", "key", fetcher as any);
+    const rejected = expect(pending).rejects.toThrow("Aborted");
+    await vi.advanceTimersByTimeAsync(1_500);
+    await rejected;
+    vi.useRealTimers();
+  });
+
   it("fails closed for malformed answers and network errors", async () => {
     await expect(classifyMessage("hello", "key", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }) as any)).rejects.toThrow();
+    const invalidProbabilities = { stop: 1.2, steer: 0, followUp: 0, unclear: 0 };
+    await expect(classifyMessage("hello", "key", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ answers: { route: { type: "choice", choice: "stop", confidence: 0.99, probabilities: invalidProbabilities } } }),
+    }) as any)).rejects.toThrow("Invalid TypeSafe route answer");
     await expect(classifyMessage("hello", "key", vi.fn().mockRejectedValue(new Error("offline")) as any)).rejects.toThrow("offline");
   });
 
@@ -81,6 +103,40 @@ describe("Jev auto-routing", async () => {
     harness.setIdle(true);
     harness.settled({}, harness.ctx);
     expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("Stop this now");
+  });
+
+  it("preserves prefix-card behavior when Jev is enabled", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    const fetcher = vi.spyOn(globalThis, "fetch");
+    const harness = createHarness(false);
+    expect(await harness.input({ text: "&&summarize", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(fetcher).not.toHaveBeenCalled();
+    harness.setIdle(true);
+    harness.settled({}, harness.ctx);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("summarize");
+  });
+
+  it("keeps concurrent input decisions attached to their own text", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    const resolvers: Array<(response: Response) => void> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve); }));
+    const harness = createHarness(false);
+    const first = harness.input({ text: "correction", source: "interactive" }, harness.ctx);
+    const second = harness.input({ text: "extra summary", source: "interactive" }, harness.ctx);
+    const answer = (choice: string): Response => ({
+      ok: true,
+      json: async () => ({ answers: { route: {
+        type: "choice", choice, confidence: 0.95,
+        probabilities: choice === "steer"
+          ? { stop: 0.01, steer: 0.9, followUp: 0.08, unclear: 0.01 }
+          : { stop: 0.01, steer: 0.08, followUp: 0.9, unclear: 0.01 },
+      } } }),
+    } as Response);
+    resolvers[1](answer("followUp"));
+    resolvers[0](answer("steer"));
+    await Promise.all([first, second]);
+    expect(harness.pi.sendUserMessage).toHaveBeenNthCalledWith(1, "extra summary", { deliverAs: "followUp" });
+    expect(harness.pi.sendUserMessage).toHaveBeenNthCalledWith(2, "correction", { deliverAs: "steer" });
   });
 
   it("bypasses media input and extension input without making network requests", async () => {
@@ -110,6 +166,40 @@ describe("Jev auto-routing", async () => {
     expect(harness.ctx.abort).not.toHaveBeenCalled();
     fetcher.mockRestore();
     vi.unstubAllEnvs();
+  });
+
+  it("falls back to native delivery when the inference deadline expires", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }));
+    const harness = createHarness(false);
+    const pending = harness.input({ text: "hello", source: "interactive" }, harness.ctx);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(await pending).toEqual({ action: "continue" });
+    expect(harness.ctx.abort).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("uses current idle state after inference before choosing delivery", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    let resolveResponse!: (response: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise((resolve) => { resolveResponse = resolve; }));
+    const harness = createHarness(false);
+    const pending = harness.input({ text: "correct this", source: "interactive" }, harness.ctx);
+    harness.setIdle(true);
+    resolveResponse({
+      ok: true,
+      json: async () => ({ answers: { route: {
+        type: "choice", choice: "steer", confidence: 0.95,
+        probabilities: { stop: 0.01, steer: 0.9, followUp: 0.08, unclear: 0.01 },
+      } } }),
+    } as Response);
+    expect(await pending).toEqual({ action: "handled" });
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledOnce();
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("correct this");
+    expect(harness.ctx.abort).not.toHaveBeenCalled();
   });
 
   it("preserves native input when the key is absent or inference fails", async () => {
