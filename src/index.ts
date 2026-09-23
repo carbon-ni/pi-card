@@ -34,6 +34,7 @@ function deliveredMessage(entry: QueueEntry): string {
 
 export default function registerCard(pi: ExtensionAPI): void {
   const queue: QueueEntry[] = [];
+  let routingQueue = Promise.resolve();
 
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") return { action: "continue" };
@@ -57,33 +58,37 @@ export default function registerCard(pi: ExtensionAPI): void {
       const apiKey = process.env.TYPESAFE_API_KEY;
       if (!apiKey || event.source !== "interactive" || event.images?.length) return { action: "continue" };
 
-      let route;
-      try {
-        route = await classifyMessage(event.text, apiKey);
-      } catch {
-        // Preserve Pi's native behavior when routing is unavailable.
-        return { action: "continue" };
-      }
+      const routeTask = routingQueue.then(async () => {
+        let route;
+        try {
+          route = await classifyMessage(event.text, apiKey);
+        } catch {
+          // Preserve Pi's native behavior when routing is unavailable.
+          return { action: "continue" as const };
+        }
 
-      if (route === "unclear") {
-        if (ctx.isIdle()) return { action: "continue" };
-        queue.push({ kind: "followUp", message: event.text });
-        ctx.ui.notify("Unclear intent; queued as a follow-up", "info");
-        return { action: "handled" };
-      }
+        if (route === "unclear") {
+          if (ctx.isIdle()) return { action: "continue" as const };
+          queue.push({ kind: "followUp", message: event.text });
+          ctx.ui.notify("Unclear intent; queued as a follow-up", "info");
+          return { action: "handled" as const };
+        }
 
-      if (ctx.isIdle()) {
-        pi.sendUserMessage(event.text);
-        return { action: "handled" };
-      }
-      if (route === "stop") {
-        queue.push({ kind: "interrupt", message: event.text });
-        ctx.abort();
-        ctx.ui.notify("Current work interrupted", "warning");
-      } else {
-        pi.sendUserMessage(event.text, { deliverAs: route === "steer" ? "steer" : "followUp" });
-      }
-      return { action: "handled" };
+        if (ctx.isIdle()) {
+          pi.sendUserMessage(event.text);
+          return { action: "handled" as const };
+        }
+        if (route === "stop") {
+          queue.push({ kind: "interrupt", message: event.text });
+          ctx.abort();
+          ctx.ui.notify("Current work interrupted", "warning");
+        } else {
+          pi.sendUserMessage(event.text, { deliverAs: route === "steer" ? "steer" : "followUp" });
+        }
+        return { action: "handled" as const };
+      });
+      routingQueue = routeTask.then(() => undefined, () => undefined);
+      return routeTask;
     }
 
     if (ctx.isIdle()) {

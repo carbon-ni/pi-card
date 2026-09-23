@@ -53,6 +53,8 @@ export async function classifyMessage(
       !ROUTES.includes(answer.choice as Route) ||
       typeof answer.confidence !== "number" ||
       !Number.isFinite(answer.confidence) ||
+      answer.confidence < 0 ||
+      answer.confidence > 1 ||
       !isRecord(answer.probabilities) ||
       ROUTES.some((route) =>
         typeof answer.probabilities[route] !== "number" ||

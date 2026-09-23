@@ -84,6 +84,13 @@ describe("Jev auto-routing", async () => {
       ok: true,
       json: async () => ({ answers: { route: { type: "choice", choice: "stop", confidence: 0.99, probabilities: invalidProbabilities } } }),
     }) as any)).rejects.toThrow("Invalid TypeSafe route answer");
+    await expect(classifyMessage("hello", "key", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ answers: { route: {
+        type: "choice", choice: "stop", confidence: 1.1,
+        probabilities: { stop: 1, steer: 0, followUp: 0, unclear: 0 },
+      } } }),
+    }) as any)).rejects.toThrow("Invalid TypeSafe route answer");
     await expect(classifyMessage("hello", "key", vi.fn().mockRejectedValue(new Error("offline")) as any)).rejects.toThrow("offline");
   });
 
@@ -123,6 +130,7 @@ describe("Jev auto-routing", async () => {
     const harness = createHarness(false);
     const first = harness.input({ text: "correction", source: "interactive" }, harness.ctx);
     const second = harness.input({ text: "extra summary", source: "interactive" }, harness.ctx);
+    await Promise.resolve();
     const answer = (choice: string): Response => ({
       ok: true,
       json: async () => ({ answers: { route: {
@@ -132,11 +140,14 @@ describe("Jev auto-routing", async () => {
           : { stop: 0.01, steer: 0.08, followUp: 0.9, unclear: 0.01 },
       } } }),
     } as Response);
-    resolvers[1](answer("followUp"));
+    expect(resolvers).toHaveLength(1);
     resolvers[0](answer("steer"));
-    await Promise.all([first, second]);
-    expect(harness.pi.sendUserMessage).toHaveBeenNthCalledWith(1, "extra summary", { deliverAs: "followUp" });
-    expect(harness.pi.sendUserMessage).toHaveBeenNthCalledWith(2, "correction", { deliverAs: "steer" });
+    await first;
+    expect(resolvers).toHaveLength(2);
+    resolvers[1](answer("followUp"));
+    await second;
+    expect(harness.pi.sendUserMessage).toHaveBeenNthCalledWith(1, "correction", { deliverAs: "steer" });
+    expect(harness.pi.sendUserMessage).toHaveBeenNthCalledWith(2, "extra summary", { deliverAs: "followUp" });
   });
 
   it("bypasses media input and extension input without making network requests", async () => {
@@ -189,6 +200,7 @@ describe("Jev auto-routing", async () => {
     const harness = createHarness(false);
     const pending = harness.input({ text: "correct this", source: "interactive" }, harness.ctx);
     harness.setIdle(true);
+    await Promise.resolve();
     resolveResponse({
       ok: true,
       json: async () => ({ answers: { route: {
