@@ -14,22 +14,17 @@ Type what you want in plain English. Pi Card understands whether to interrupt, r
 
 ## Install after release
 
-These commands become available after the `v0.1.0` release is published. They are not usable yet:
-
-```sh
-pi install npm:@carbon-ni/pi-card
-```
-
-Update an existing npm installation with:
-
-```sh
-pi update npm:@carbon-ni/pi-card
-```
-
-To install the tagged source instead:
+Once the `v0.1.0` GitHub release exists, install its tagged source:
 
 ```sh
 pi install git:github.com/carbon-ni/pi-card@v0.1.0
+```
+
+npm is a separate publish step. Once `@carbon-ni/pi-card` is available on npm, install or update it with:
+
+```sh
+pi install npm:@carbon-ni/pi-card
+pi update npm:@carbon-ni/pi-card
 ```
 
 To move a Git installation to another release tag, reinstall it with the new tag:
