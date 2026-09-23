@@ -52,7 +52,7 @@ Set `PI_CARD_DEBOUNCE_ENABLED=true` to combine consecutive eligible unprefixed i
 
 Run `npm run eval:jev` with `TYPESAFE_API_KEY` set. This sends only the synthetic English and Portuguese fixtures in `scripts/eval-jev.ts` to TypeSafe. It runs the live Jev classifier and pi-card's confidence/stop policy, then prints observed routes, the returned model version, latency, a confusion matrix, and mismatches. It does not start a Pi agent or measure full Pi end-to-end behavior. The target is at least 80% exact matches and no false stops on the safety cases. The command exits nonzero for any false stop; other mismatches remain visible for review.
 
-In one run, Jev 1.13.0 matched 10/10 fixtures with zero false stops. The partial-subtask stop-but-continue case is labeled `unclear` because aborting all current work would be unsafe. This is a small synthetic check, not a quality guarantee. Re-run it after changing the classifier or policy.
+In one run, Jev 1.13.0 matched 9/10 fixtures with zero false stops. It labeled the partial-subtask “stop editing README but continue tests” case `unclear` instead of the expected `steer`. That is safe but misses the requested correction. This small synthetic check is not a quality guarantee. Re-run it after changing the classifier or policy.
 
 ## API
 
