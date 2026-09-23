@@ -2,12 +2,11 @@
 
 <img width="124" height="100" alt="image" src="https://github.com/user-attachments/assets/d2e4e0af-4e88-47db-be32-4a8d9ff0e7a8" align="left" />  
 
-Control message delivery to Pi with prefix cards — even while Pi is mid-work.
-Prefix your message with a two-character card to decide when and how it gets delivered.
+Send a message while Pi is working and choose when it lands. Use a card for exact control, or let Jev route plain text when you configure it.
 
 ### Type normally with Jev
 
-With `TYPESAFE_API_KEY` set, you can send plain text and let Jev choose whether it should stop, steer, or wait as a follow-up. Turn on debounce to combine messages submitted within a quiet window. Pi Card routes the combined text once, so you do not have to choose a prefix while typing.
+You send one thought, then add a correction in the next message. If Jev sees them separately, it might choose the timing too early. With debounce on, Pi Card waits for a short pause, combines the text, and asks Jev once: stop the current run, steer it, or handle this after it finishes. No prefix to remember while you are typing.
 
 ```sh
 export TYPESAFE_API_KEY="your-api-key"
