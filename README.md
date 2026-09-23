@@ -1,130 +1,43 @@
 # Pi Card
 
-<img height="150" alt="image" src="https://github.com/user-attachments/assets/d2e4e0af-4e88-47db-be32-4a8d9ff0e7a8" align="left" />  
+<img height="150" alt="image" src="https://github.com/user-attachments/assets/d2e4e0af-4e88-47db-be32-4a8d9ff0e7a8" align="left" />
 
-Send a message while Pi is working and choose when it lands. Use a card for exact control, or let Jev route plain text when you configure it.
+Pi Card figures out what you want to do with a message while Pi is working: correct the current run, stop it, or leave something for later. You can just type. When timing must be exact, use a card.
 
-### Type normally with Jev
+## Try it
 
-You send one thought, then add a correction in the next message. If Jev sees them separately, it might choose the timing too early. With debounce on, Pi Card waits for a short pause, combines the text, and asks Jev once: stop the current run, steer it, or handle this after it finishes. No prefix to remember while you are typing.
-
-```sh
-export TYPESAFE_API_KEY="your-api-key"
-export PI_CARD_DEBOUNCE_ENABLED=true
-export PI_CARD_DEBOUNCE_MS=600
-```
-
-No API key means Pi keeps its native input behavior. With a key but debounce off, Jev routes each message immediately. Debounce adds a quiet-window delay. Stop decisions are confidence-gated, but Jev can still miss a correction; the current synthetic eval has one miss, reported below.
-
-</br>
-
-## Cards
-
-| Prefix | Card | Active | Idle |
-|---|---|---|---|
-| `**` | Interrupt | Aborts current work, delivers message after agent settles | Sends immediately |
-| `&&` | Follow-up | Queues message after current run finishes (flippable) | Sends immediately |
-| `??` | Brainstorm | Aborts current work, delivers a brainstorming prompt after agent settles | Sends immediately with brainstorming framing |
-| `~~` | Flip | Delivers the last queued `&&` as a steer — agent sees it mid-run, no abort | — |
-
-## Behavior by agent state
-
-### Agent is idle
-
-All prefixes are stripped and the message is sent immediately. Brainstorm (`??`) wraps the message in a brainstorming prompt.
-
-### Agent is active (mid-run)
-
-- **`**`** — aborts the current agent run and queues the message. Once the agent settles, the message is delivered as the next prompt.
-- **`&&`** — queues the message as a follow-up. Delivered after the current run completes without interrupting it.
-- **`??`** — aborts the current run and queues a brainstorming prompt (`Stop the previous approach. Let's brainstorm … before taking further action.`).
-- **`~~`** (sent alone) — flips the most recent queued `&&` into a steer: the message is handed to the agent immediately, mid-run, without interrupting it. Work in progress continues. Flipping an interrupt or brainstorm card is refused (an aborted run can't be resumed), and `~~text` passes through untouched so markdown strikethrough stays safe.
-
-Without a TypeSafe key, plain text follows Pi's native behavior. While Pi is active, it is a steer as soon as you submit it and cannot be recalled. With routing enabled, Jev chooses the delivery timing. Use a prefix card when you want to choose the timing yourself.
-
-## Usage
-
-```
-**fix the type error in auth.ts
-&&summarize what you changed
-??is there a simpler approach to this caching layer
-~~
-```
-
-Without `TYPESAFE_API_KEY`, ordinary messages without a prefix pass through unchanged. With the key configured, unprefixed interactive text is sent to TypeSafe Jev for delivery-timing classification: clear stop requests interrupt, clear corrections steer, clear follow-ups queue, and unclear intent is non-destructive (queued as a follow-up while active). Stop requires a high probability and confidence threshold. Inference has a 1.5-second timeout; network, timeout, or invalid-response failures preserve Pi's native input behavior. Prefix cards always take precedence; extension-injected input and messages with attachments bypass classification.
-
-**Privacy:** with the key configured, eligible raw text and configured example text are transmitted to TypeSafe AI's API for classification. Do not enable this if that external processing is unsuitable for your messages. Neither is logged by pi-card. The global config is local preference data, not a secret store.
-
-### Personal routing examples
-
-Optionally create `pi-card.json` in Pi's agent config directory (normally `~/.pi/agent`; respects `PI_CODING_AGENT_DIR`):
-
-```json
-{
-  "examples": [
-    { "text": "park this until the tests finish", "route": "followUp" },
-    { "text": "switch to the staging database", "route": "steer" }
-  ]
-}
-```
-
-Examples guide Jev's interpretation of similar wording; they are not exact phrase rules. Supported routes are `stop`, `steer`, and `followUp`. The config is read from the user's global Pi agent directory only (not from project files). It allows at most 20 examples, 1,000 characters per example, and a 32 KB file. Invalid config is ignored as a whole with a generic warning, then default routing is used. A stop example never bypasses the existing probability and confidence thresholds. Prefix cards still take precedence; no API key, classifier failures, attachments, and non-interactive inputs retain existing behavior.
-
-### Routing diagnostics
-
-Set `PI_CARD_DEBUG=true` to append structured `pi-card.routing` records to the local Pi session. Records show config state, input branch, Jev choice and confidence-policy outcome, safe failure category, and delivery or queue action. A `routeId` links each route or failure record to its resulting action. They never include message text, API keys, or raw error details. Diagnostics are off by default.
-
-The config record is written on every session start, including reloads. To inspect records, run this in Pi's bash tool:
+From this checkout:
 
 ```sh
-jq -c 'select(.type == "custom" and .customType == "pi-card.routing") | {timestamp, data}' "$PI_SESSION_FILE"
-```
-
-If there is no `session_start` record after restarting Pi, check the loaded extension path. An older global copy will not emit this checkout's diagnostics. This repository does not modify a global installation.
-
-### Optional time-gap debounce
-
-Set `PI_CARD_DEBOUNCE_ENABLED=true` to combine consecutive eligible unprefixed interactive text submissions and route them together after a quiet period. It requires `TYPESAFE_API_KEY`; otherwise the existing behavior is unchanged. The default is disabled, preserving immediate Jev routing when a key is configured. `PI_CARD_DEBOUNCE_MS` sets the quiet period in milliseconds (default `600`; positive integers are capped at `5000`). A batch also flushes after five seconds or 16,000 characters to prevent indefinite delay or unbounded buffering. A single submission over 16,000 characters bypasses batching and is sent to Jev immediately after any earlier pending batch. Combined messages retain input order, separated by blank lines (`\n\n`). Prefix cards, extension input, and image-bearing input flush any pending text before bypassing debounce. That preserves order, but the bypassing input waits for classification (up to the 1.5-second request timeout). Pending text is flushed when the session shuts down.
-
-### Check routing against synthetic examples
-
-Run `npm run eval:jev` with `TYPESAFE_API_KEY` set. This sends only the synthetic English and Portuguese fixtures in `scripts/eval-jev.ts` to TypeSafe. It runs the live Jev classifier and pi-card's confidence/stop policy, then prints observed routes, the returned model version, latency, a confusion matrix, and mismatches. It also runs two personalized synthetic cases both without examples and with their labeled examples, plus five stop/ambiguous/quoted/negated/unrelated safety cases with and without examples; it reports both false-stop counts. These live outcomes are nondeterministic and exploratory, not a CI gate or quality guarantee. It does not start a Pi agent or measure full Pi end-to-end behavior. The target is at least 80% exact matches and no false stops on the safety cases. The command exits nonzero for any false stop; other mismatches remain visible for review.
-
-In one run, Jev 1.13.0 matched 9/10 fixtures with zero false stops. It labeled the partial-subtask “stop editing README but continue tests” case `unclear` instead of the expected `steer`. That is safe but misses the requested correction. This small synthetic check is not a quality guarantee. Re-run it after changing the classifier or policy.
-
-## API
-
-```ts
-import registerCard, { parseTrigger, type SteeringTrigger } from "pi-card";
-```
-
-### `parseTrigger(text: string): SteeringTrigger | undefined`
-
-Parses a two-character prefix from the message. Returns `undefined` for invalid or prefix-only input.
-
-### `SteeringTrigger`
-
-```ts
-type SteeringTrigger =
-  | { kind: "interrupt"; message: string }
-  | { kind: "followUp"; message: string }
-  | { kind: "brainstorm"; message: string };
-```
-
-### `registerCard(pi: ExtensionAPI): void`
-
-Registers the `input` and `agent_settled` hooks. This is the default export — Pi loads it automatically.
-
-## Development
-
-```bash
 npm install
-npm test
-npm run lint
-```
-
-## Try locally
-
-```bash
+export TYPESAFE_API_KEY="your-api-key"
 pi -e ./src/index.ts
 ```
+
+While Pi is working, write what you mean:
+
+| You say | Pi Card treats it as |
+| --- | --- |
+| “Actually, use the simpler approach.” | A steer: change direction without stopping. |
+| “When you finish, summarize what changed.” | A follow-up: wait until the run finishes. |
+| “Stop this task now. Don't continue.” | A stop: abort, then deliver your message. |
+
+These are examples, not exact phrase rules. If your intent is unclear, Pi Card queues a follow-up rather than interrupting work. It also lets you [add examples in your own words](docs/configuration.md#personal-examples). If you tend to send a correction right after the first message, [combine them before routing](docs/configuration.md#combine-messages-before-routing).
+
+## Take control when you need to
+
+| Type | What happens while Pi is working |
+| --- | --- |
+| `**fix the type error` | Stop the current run, then send this message. |
+| `&&summarize what changed` | Wait until the current run finishes. |
+| `??is there a simpler way?` | Stop and ask Pi to brainstorm before doing more. |
+| `~~` | Send the last queued `&&` now as a steer, without stopping the run. |
+
+Cards work without an API key. The three message cards run immediately while Pi is idle. `~~` only flips a queued `&&`; it cannot undo a stop. To force a steer while Pi is active, send `&&` followed by `~~`.
+
+## More
+
+- [Configuration](docs/configuration.md): API key, personal examples, privacy, and diagnostics.
+- [Development](docs/development.md): local checks, routing eval, and extension API.
+
+Without `TYPESAFE_API_KEY`, plain text keeps Pi's native behavior. With the key, eligible messages and configured examples go to an external service for classification. Check [the privacy details](docs/configuration.md#let-jev-choose) before enabling it.
