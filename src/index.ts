@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { debounceDelayFromEnv, TimeGapDebouncer } from "./debounce.js";
-import { classifyMessage } from "./router.js";
+import { classifyMessageDetailed } from "./router.js";
 
 export type SteeringTrigger =
   | { kind: "interrupt"; message: string }
@@ -41,6 +41,23 @@ export default function registerCard(pi: ExtensionAPI): void {
   const apiKey = process.env.TYPESAFE_API_KEY;
   const debounceEnabled = process.env.PI_CARD_DEBOUNCE_ENABLED === "true" && Boolean(apiKey);
   const debounceDelay = debounceDelayFromEnv(process.env.PI_CARD_DEBOUNCE_MS);
+  const debugEnabled = process.env.PI_CARD_DEBUG === "true";
+  const diagnostic = (event: string, details: Record<string, string | number | boolean> = {}): void => {
+    if (!debugEnabled) return;
+    try {
+      pi.appendEntry("pi-card.routing", { event, ...details });
+    } catch {
+      // Diagnostics must never change message routing behavior.
+    }
+  };
+
+  diagnostic("loaded", {
+    apiKeyConfigured: Boolean(apiKey),
+    routingEnabled: Boolean(apiKey),
+    debounceRequested: process.env.PI_CARD_DEBOUNCE_ENABLED === "true",
+    debounceEnabled,
+    debounceDelayMs: debounceDelay,
+  });
 
   const sendUserMessage = async (
     text: string,
@@ -59,42 +76,67 @@ export default function registerCard(pi: ExtensionAPI): void {
 
   const routeText = (text: string, ctx: any, combinedFallback = false): Promise<InputResult> => {
     const routeTask = routingQueue.then(async () => {
-      let route;
+      let decision;
       try {
-        route = await classifyMessage(text, apiKey!);
-      } catch {
+        decision = await classifyMessageDetailed(text, apiKey!);
+      } catch (error) {
+        const failure = error instanceof Error && error.name === "AbortError"
+          ? "timeout"
+          : "classifier_error";
+        diagnostic("classifier_failure", {
+          failure,
+          fallback: combinedFallback ? "safe_delivery" : "native_input",
+        });
         if (!combinedFallback) {
           // Preserve Pi's native behavior when routing is unavailable.
+          diagnostic("action", { action: "native_pass_through", reason: failure });
           return { action: "continue" as const };
         }
+        const mode = ctx.isIdle() ? "normal" : "steer";
+        diagnostic("action", { action: "safe_delivery", mode });
         if (ctx.isIdle()) await sendUserMessage(text);
         else await sendUserMessage(text, { deliverAs: "steer" });
         return { action: "handled" as const };
       }
 
+      const route = decision.route;
+      diagnostic("route", {
+        choice: decision.choice,
+        outcome: route,
+        policy: decision.choice === route ? "accepted" : "downgraded",
+        confidence: decision.confidence,
+      });
+
       if (route === "unclear") {
         if (ctx.isIdle()) {
           if (combinedFallback) {
+            diagnostic("action", { action: "deliver", mode: "normal", reason: "unclear_while_idle" });
             await sendUserMessage(text);
             return { action: "handled" as const };
           }
+          diagnostic("action", { action: "native_pass_through", reason: "unclear_while_idle" });
           return { action: "continue" as const };
         }
         queue.push({ kind: "followUp", message: text });
+        diagnostic("action", { action: "queue", kind: "followUp", reason: "unclear_while_active" });
         ctx.ui.notify("Unclear intent; queued as a follow-up", "info");
         return { action: "handled" as const };
       }
 
       if (ctx.isIdle()) {
+        diagnostic("action", { action: "deliver", mode: "normal", reason: "idle" });
         await sendUserMessage(text);
         return { action: "handled" as const };
       }
       if (route === "stop") {
         queue.push({ kind: "interrupt", message: text });
+        diagnostic("action", { action: "abort_and_queue", kind: "interrupt" });
         ctx.abort();
         ctx.ui.notify("Current work interrupted", "warning");
       } else {
-        await sendUserMessage(text, { deliverAs: route === "steer" ? "steer" : "followUp" });
+        const mode = route === "steer" ? "steer" : "followUp";
+        diagnostic("action", { action: "deliver", mode, reason: "jev_route" });
+        await sendUserMessage(text, { deliverAs: mode });
       }
       return { action: "handled" as const };
     });
@@ -108,12 +150,17 @@ export default function registerCard(pi: ExtensionAPI): void {
 
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") {
-      if (internalDeliveries.has(event.text)) return { action: "continue" };
+      if (internalDeliveries.has(event.text)) {
+        diagnostic("input", { branch: "internal_extension" });
+        return { action: "continue" };
+      }
+      diagnostic("input", { branch: "extension_bypass" });
       await debouncer?.flush();
       return { action: "continue" };
     }
 
     if (event.text === "~~") {
+      diagnostic("input", { branch: "flip" });
       await debouncer?.flush();
       const last = queue[queue.length - 1];
       if (!last || last.kind !== "followUp") {
@@ -123,6 +170,7 @@ export default function registerCard(pi: ExtensionAPI): void {
       }
 
       queue.pop();
+      diagnostic("action", { action: "deliver", mode: "steer", reason: "flipped_followUp" });
       await sendUserMessage(last.message, { deliverAs: "steer" });
       ctx.ui.notify(`Flipped to steer: ${last.message}`, "info");
       return { action: "handled" };
@@ -130,12 +178,15 @@ export default function registerCard(pi: ExtensionAPI): void {
 
     const trigger = parseTrigger(event.text);
     if (trigger) {
+      diagnostic("input", { branch: "prefix", kind: trigger.kind });
       await debouncer?.flush();
       if (ctx.isIdle()) {
+        diagnostic("action", { action: "deliver", mode: "normal", reason: "prefix_while_idle", kind: trigger.kind });
         return { action: "transform", text: immediateMessage(trigger) };
       }
 
       queue.push(trigger);
+      diagnostic("action", { action: trigger.kind === "followUp" ? "queue" : "abort_and_queue", kind: trigger.kind });
       if (trigger.kind === "followUp") {
         ctx.ui.notify("Follow-up queued", "info");
       } else {
@@ -146,18 +197,23 @@ export default function registerCard(pi: ExtensionAPI): void {
     }
 
     if (!apiKey || event.source !== "interactive" || event.images?.length) {
+      const branch = !apiKey ? "no_api_key" : event.images?.length ? "attachment_bypass" : "non_interactive";
+      diagnostic("input", { branch });
       await debouncer?.flush();
       return { action: "continue" };
     }
 
     if (debouncer) {
+      diagnostic("input", { branch: "debounced_interactive" });
       void debouncer.add(event.text, ctx);
       return { action: "handled" };
     }
+    diagnostic("input", { branch: "immediate_interactive" });
     return routeText(event.text, ctx);
   });
 
   pi.on("session_shutdown", async () => {
+    diagnostic("lifecycle", { action: "session_shutdown_flush" });
     await debouncer?.flush();
   });
 
@@ -165,6 +221,11 @@ export default function registerCard(pi: ExtensionAPI): void {
     if (!ctx.isIdle() || queue.length === 0) return;
 
     const entries = queue.splice(0);
+    diagnostic("action", {
+      action: "queue_drain",
+      count: entries.length,
+      kinds: [...new Set(entries.map((entry) => entry.kind))].join(","),
+    });
     await sendUserMessage(entries.map(deliveredMessage).join("\n\n"));
   });
 }

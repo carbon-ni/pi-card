@@ -3,7 +3,10 @@ import registerCard, { parseTrigger } from "./index.js";
 import { classifyMessage } from "./router.js";
 import { debounceDelayFromEnv } from "./debounce.js";
 
-beforeEach(() => vi.stubEnv("TYPESAFE_API_KEY", ""));
+beforeEach(() => {
+  vi.stubEnv("TYPESAFE_API_KEY", "");
+  vi.stubEnv("PI_CARD_DEBUG", "false");
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -36,6 +39,98 @@ describe("Jev auto-routing", () => {
     ["9000", 5000],
   ])("uses a bounded debounce delay for %j", (value, expected) => {
     expect(debounceDelayFromEnv(value)).toBe(expected);
+  });
+
+  it("writes privacy-safe structured routing diagnostics when debugging is enabled", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "private-api-key");
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("stop"));
+    const harness = createHarness(false);
+
+    expect(await harness.input({ text: "private user text", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+
+    const entries = harness.pi.appendEntry.mock.calls.map(([, data]) => data);
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "loaded", apiKeyConfigured: true, debounceEnabled: false }),
+      expect.objectContaining({ event: "input", branch: "immediate_interactive" }),
+      expect.objectContaining({ event: "route", choice: "stop", outcome: "stop", confidence: 0.99 }),
+      expect.objectContaining({ event: "action", action: "abort_and_queue", kind: "interrupt" }),
+    ]));
+    const serialized = JSON.stringify(entries);
+    expect(serialized).not.toContain("private user text");
+    expect(serialized).not.toContain("private-api-key");
+  });
+
+  it("logs confidence-policy downgrades without logging message details", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ answers: { route: { type: "choice", choice: "stop", confidence: 0.7, probabilities: { stop: 0.97, steer: 0.01, followUp: 0.01, unclear: 0.01 } } } }),
+    } as Response);
+    const harness = createHarness(false);
+    await harness.input({ text: "sensitive message", source: "interactive" }, harness.ctx);
+    const entries = harness.pi.appendEntry.mock.calls.map(([, data]) => data);
+    expect(entries).toContainEqual(expect.objectContaining({ event: "route", choice: "stop", outcome: "unclear", policy: "downgraded", confidence: 0.7 }));
+    expect(JSON.stringify(entries)).not.toContain("sensitive message");
+  });
+
+  it("logs timeout as a safe failure category", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("private detail", "AbortError"));
+    const harness = createHarness(false);
+    await harness.input({ text: "sensitive message", source: "interactive" }, harness.ctx);
+    expect(JSON.stringify(harness.pi.appendEntry.mock.calls)).toContain('"failure":"timeout"');
+    expect(JSON.stringify(harness.pi.appendEntry.mock.calls)).not.toContain("private detail");
+  });
+
+  it("records prefix and bypass branches without message text", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    const harness = createHarness(false);
+    await harness.input({ text: "**private prefix body", source: "interactive" }, harness.ctx);
+    await harness.input({ text: "private attachment body", images: [{}], source: "interactive" }, harness.ctx);
+    await harness.input({ text: "private extension body", source: "extension" }, harness.ctx);
+    const entries = harness.pi.appendEntry.mock.calls.map(([, data]) => data);
+    expect(entries).toContainEqual(expect.objectContaining({ event: "input", branch: "prefix", kind: "interrupt" }));
+    expect(entries).toContainEqual(expect.objectContaining({ event: "input", branch: "attachment_bypass" }));
+    expect(entries).toContainEqual(expect.objectContaining({ event: "input", branch: "extension_bypass" }));
+    const serialized = JSON.stringify(entries);
+    expect(serialized).not.toContain("private prefix body");
+    expect(serialized).not.toContain("private attachment body");
+    expect(serialized).not.toContain("private extension body");
+  });
+
+  it("does not let a failing diagnostic sink affect routing", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    harness.pi.appendEntry.mockImplementation(() => { throw new Error("diagnostic sink failed"); });
+    expect(await harness.input({ text: "fix this", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("fix this", { deliverAs: "steer" });
+  });
+
+  it("keeps routing diagnostics disabled by default", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await harness.input({ text: "do not log this", source: "interactive" }, harness.ctx);
+    expect(harness.pi.appendEntry).not.toHaveBeenCalled();
+  });
+
+  it("logs classifier failure category without raw error details", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "private-api-key");
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("secret error text"));
+    const harness = createHarness(false);
+    expect(await harness.input({ text: "private user text", source: "interactive" }, harness.ctx)).toEqual({ action: "continue" });
+    const serialized = JSON.stringify(harness.pi.appendEntry.mock.calls);
+    expect(serialized).toContain('"failure":"classifier_error"');
+    expect(serialized).not.toContain("private user text");
+    expect(serialized).not.toContain("private-api-key");
+    expect(serialized).not.toContain("secret error text");
   });
 
   it("debounces partial English and Portuguese messages until a quiet gap", async () => {
@@ -635,6 +730,7 @@ function createHarness(initialIdle: boolean) {
   const handlers = new Map<string, (...args: any[]) => any>();
   const pi = {
     on: vi.fn((name: string, handler: (...args: any[]) => any) => handlers.set(name, handler)),
+    appendEntry: vi.fn(),
     sendUserMessage: vi.fn(),
   };
   const ctx = { isIdle: vi.fn(() => idle), abort: vi.fn(), ui: { notify: vi.fn() } };

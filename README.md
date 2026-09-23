@@ -55,6 +55,12 @@ Without `TYPESAFE_API_KEY`, ordinary messages without a prefix pass through unch
 
 **Privacy:** with the key configured, eligible raw text is transmitted to TypeSafe AI's API for classification. Do not enable this if that external processing is unsuitable for your messages. The key and message text are not logged by pi-card.
 
+### Routing diagnostics
+
+Set `PI_CARD_DEBUG=true` to append structured `pi-card.routing` records to the local Pi session. Records show config state, input branch, Jev choice and confidence-policy outcome, safe failure category, and delivery or queue action. They never include message text, API keys, or raw error details. Diagnostics are off by default.
+
+After enabling it, look for a `loaded` record in the session. If it is missing after restarting Pi, Pi may be loading a different copy of the extension; check the loaded extension path. This repository does not modify a global installation.
+
 ### Optional time-gap debounce
 
 Set `PI_CARD_DEBOUNCE_ENABLED=true` to combine consecutive eligible unprefixed interactive text submissions and route them together after a quiet period. It requires `TYPESAFE_API_KEY`; otherwise the existing behavior is unchanged. The default is disabled, preserving immediate Jev routing when a key is configured. `PI_CARD_DEBOUNCE_MS` sets the quiet period in milliseconds (default `600`; positive integers are capped at `5000`). A batch also flushes after five seconds or 16,000 characters to prevent indefinite delay or unbounded buffering. A single submission over 16,000 characters bypasses batching and is sent to Jev immediately after any earlier pending batch. Combined messages retain input order, separated by blank lines (`\n\n`). Prefix cards, extension input, and image-bearing input flush any pending text before bypassing debounce. That preserves order, but the bypassing input waits for classification (up to the 1.5-second request timeout). Pending text is flushed when the session shuts down.

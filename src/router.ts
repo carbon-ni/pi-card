@@ -8,6 +8,7 @@ export const ROUTE_TIMEOUT_MS = 1_500;
 type FetchLike = typeof fetch;
 
 export interface RouteDecision {
+  choice: Route;
   route: Route;
   model?: string;
   confidence: number;
@@ -87,6 +88,7 @@ export async function classifyMessageDetailed(
         : "unclear"
       : answer.confidence >= ROUTE_CONFIDENCE_THRESHOLD ? choice : "unclear";
     return {
+      choice,
       route,
       model: typeof payload.model === "string" ? payload.model : undefined,
       confidence: answer.confidence,
