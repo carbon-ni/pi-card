@@ -160,5 +160,5 @@ if (!apiKey) {
       targetFalseStops: 0,
     },
   }, null, 2));
-  if (falseStops > 0) process.exitCode = 1;
+  if (falseStops > 0 || baselineSafetyFalseStops > 0 || guidedSafetyFalseStops > 0) process.exitCode = 1;
 }
