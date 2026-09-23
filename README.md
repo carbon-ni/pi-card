@@ -1,10 +1,16 @@
 # Pi Card
-
+<div>
 <img height="150" alt="image" src="https://github.com/user-attachments/assets/d2e4e0af-4e88-47db-be32-4a8d9ff0e7a8" align="left" />
 
 **More controls. Better steering. Engage!**
 
-A nod to Picard: Pi Card figures out what you want to do with a message while Pi is working. Correct the current run, stop it, or leave something for later. You can just type. When timing must be exact, use a card.
+Smart steering for PI.
+
+Type what you want in plain English. Pi Card understands whether to interrupt, redirect, follow up, or save it for later.
+
+</div>
+<br />
+<br />
 
 ## Install after release
 
