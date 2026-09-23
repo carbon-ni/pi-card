@@ -46,7 +46,13 @@ Ordinary messages without a prefix pass through unchanged by default. If `TYPESA
 
 ### Optional time-gap debounce
 
-Set `PI_CARD_DEBOUNCE_ENABLED=true` to combine consecutive eligible unprefixed interactive text submissions and route them together after a quiet period. It requires `TYPESAFE_API_KEY`; otherwise the existing behavior is unchanged. The default is disabled, preserving immediate Jev routing when a key is configured. `PI_CARD_DEBOUNCE_MS` sets the quiet period in milliseconds (default `600`; positive integers are capped at `5000`). A batch also flushes after five seconds or 16,000 characters to prevent indefinite delay or unbounded buffering. Combined messages retain input order, separated by newlines. Prefix cards, extension input, and image-bearing input flush any pending text before bypassing debounce.
+Set `PI_CARD_DEBOUNCE_ENABLED=true` to combine consecutive eligible unprefixed interactive text submissions and route them together after a quiet period. It requires `TYPESAFE_API_KEY`; otherwise the existing behavior is unchanged. The default is disabled, preserving immediate Jev routing when a key is configured. `PI_CARD_DEBOUNCE_MS` sets the quiet period in milliseconds (default `600`; positive integers are capped at `5000`). A batch also flushes after five seconds or 16,000 characters to prevent indefinite delay or unbounded buffering. Combined messages retain input order, separated by blank lines (`\n\n`). Prefix cards, extension input, and image-bearing input flush any pending text before bypassing debounce. That preserves order, but the bypassing input waits for classification (up to the 1.5-second request timeout). Pending text is flushed when the session shuts down.
+
+### Check routing against synthetic examples
+
+Run `npm run eval:jev` with `TYPESAFE_API_KEY` set. This sends only the synthetic English and Portuguese fixtures in `scripts/eval-jev.ts` to TypeSafe. It runs the live Jev classifier and pi-card's confidence/stop policy, then prints observed routes, the returned model version, latency, a confusion matrix, and mismatches. It does not start a Pi agent or measure full Pi end-to-end behavior. The target is at least 80% exact matches and no false stops on the safety cases. The command exits nonzero for any false stop; other mismatches remain visible for review.
+
+In one run, Jev 1.13.0 matched 9/10 fixtures with zero false stops. The partial-subtask stop-but-continue case returned `unclear`, which was safe but not the exact follow-up label. This is a small synthetic check, not a quality guarantee. Re-run it after changing the classifier or policy.
 
 ## API
 

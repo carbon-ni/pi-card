@@ -46,19 +46,18 @@ describe("Jev auto-routing", () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("followUp"));
     const harness = createHarness(false);
 
-    const first = harness.input({ text: "Can you help me", source: "interactive" }, harness.ctx);
+    expect(await harness.input({ text: "Can you help me", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     await vi.advanceTimersByTimeAsync(400);
-    const second = harness.input({ text: "resolver isto?", source: "interactive" }, harness.ctx);
+    expect(await harness.input({ text: "resolver isto?", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     await vi.advanceTimersByTimeAsync(599);
     expect(fetcher).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    await Promise.all([first, second]);
 
     const request = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
-    expect(request.state.message).toBe("Can you help me\nresolver isto?");
+    expect(request.state.message).toBe("Can you help me\n\nresolver isto?");
     expect(fetcher).toHaveBeenCalledOnce();
     expect(harness.pi.sendUserMessage).toHaveBeenCalledOnce();
-    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("Can you help me\nresolver isto?", { deliverAs: "followUp" });
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("Can you help me\n\nresolver isto?", { deliverAs: "followUp" });
   });
 
   it("keeps debounce disabled without a key and preserves immediate Jev routing by default", async () => {
@@ -76,16 +75,29 @@ describe("Jev auto-routing", () => {
     expect(keyed.pi.sendUserMessage).toHaveBeenCalledWith("fix this", { deliverAs: "steer" });
   });
 
+  it("delivers one combined message when idle routing is unclear", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("unclear"));
+    const harness = createHarness(true);
+    expect(await harness.input({ text: "some partial", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(await harness.input({ text: "ordinary thought", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledOnce();
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("some partial\n\nordinary thought");
+    expect(harness.ctx.abort).not.toHaveBeenCalled();
+  });
+
   it("uses current idle state when the debounce interval expires", async () => {
     vi.stubEnv("TYPESAFE_API_KEY", "test-key");
     vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
     vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("stop"));
     const harness = createHarness(false);
-    const pending = harness.input({ text: "stop this", source: "interactive" }, harness.ctx);
+    expect(await harness.input({ text: "stop this", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     harness.setIdle(true);
     await vi.advanceTimersByTimeAsync(600);
-    expect(await pending).toEqual({ action: "handled" });
     expect(harness.ctx.abort).not.toHaveBeenCalled();
     expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("stop this");
   });
@@ -99,10 +111,22 @@ describe("Jev auto-routing", () => {
     vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
     const harness = createHarness(false);
-    const pending = harness.input({ text: "buffered", source: "interactive" }, harness.ctx);
+    expect(await harness.input({ text: "buffered", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     expect(await harness.input(bypassEvent, harness.ctx)).toEqual({ action: "continue" });
-    expect(await pending).toEqual({ action: "handled" });
     expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("buffered", { deliverAs: "steer" });
+  });
+
+  it("flushes and clears the pending timer during session shutdown", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("followUp"));
+    const harness = createHarness(false);
+    expect(await harness.input({ text: "pending before shutdown", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(vi.getTimerCount()).toBe(1);
+    await harness.shutdown({}, harness.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("pending before shutdown", { deliverAs: "followUp" });
   });
 
   it("flushes debounced text before prefix-card input", async () => {
@@ -111,9 +135,8 @@ describe("Jev auto-routing", () => {
     vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
     const harness = createHarness(false);
-    const plain = harness.input({ text: "first text", source: "interactive" }, harness.ctx);
-    const card = harness.input({ text: "&&later", source: "interactive" }, harness.ctx);
-    await Promise.all([plain, card]);
+    expect(await harness.input({ text: "first text", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(await harness.input({ text: "&&later", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     expect(harness.pi.sendUserMessage).toHaveBeenNthCalledWith(1, "first text", { deliverAs: "steer" });
     harness.setIdle(true);
     harness.settled({}, harness.ctx);
@@ -126,14 +149,12 @@ describe("Jev auto-routing", () => {
     vi.useFakeTimers();
     const fetcher = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     const harness = createHarness(false);
-    const first = harness.input({ text: "partial one", source: "interactive" }, harness.ctx);
-    const second = harness.input({ text: "partial two", source: "interactive" }, harness.ctx);
+    expect(await harness.input({ text: "partial one", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(await harness.input({ text: "partial two", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     await vi.advanceTimersByTimeAsync(600);
-    expect(await first).toEqual({ action: "handled" });
-    expect(await second).toEqual({ action: "handled" });
     expect(fetcher).toHaveBeenCalledOnce();
     expect(harness.pi.sendUserMessage).toHaveBeenCalledOnce();
-    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("partial one\npartial two", { deliverAs: "steer" });
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("partial one\n\npartial two", { deliverAs: "steer" });
     expect(harness.ctx.abort).not.toHaveBeenCalled();
   });
 
@@ -145,14 +166,12 @@ describe("Jev auto-routing", () => {
       init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
     }));
     const harness = createHarness(false);
-    const first = harness.input({ text: "combine this", source: "interactive" }, harness.ctx);
-    const second = harness.input({ text: "please", source: "interactive" }, harness.ctx);
+    expect(await harness.input({ text: "combine this", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(await harness.input({ text: "please", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     await vi.advanceTimersByTimeAsync(600);
     await vi.advanceTimersByTimeAsync(1_500);
-    expect(await first).toEqual({ action: "handled" });
-    expect(await second).toEqual({ action: "handled" });
     expect(harness.pi.sendUserMessage).toHaveBeenCalledOnce();
-    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("combine this\nplease", { deliverAs: "steer" });
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("combine this\n\nplease", { deliverAs: "steer" });
     expect(harness.ctx.abort).not.toHaveBeenCalled();
   });
 
@@ -162,15 +181,14 @@ describe("Jev auto-routing", () => {
     vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("stop"));
     const harness = createHarness(false);
-    const first = harness.input({ text: "Stop", source: "interactive" }, harness.ctx);
-    const second = harness.input({ text: "right now", source: "interactive" }, harness.ctx);
+    expect(await harness.input({ text: "Stop", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
+    expect(await harness.input({ text: "right now", source: "interactive" }, harness.ctx)).toEqual({ action: "handled" });
     await vi.advanceTimersByTimeAsync(600);
-    await Promise.all([first, second]);
     expect(harness.ctx.abort).toHaveBeenCalledOnce();
     expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
     harness.setIdle(true);
     harness.settled({}, harness.ctx);
-    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("Stop\nright now");
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("Stop\n\nright now");
   });
   it.each([
     ["stop", 0.97, 0.92, "stop"],
@@ -544,6 +562,7 @@ function createHarness(initialIdle: boolean) {
     ctx,
     input: handlers.get("input")!,
     settled: handlers.get("agent_settled")!,
+    shutdown: handlers.get("session_shutdown")!,
     setIdle(value: boolean) { idle = value; },
   };
 }

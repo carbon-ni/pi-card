@@ -57,7 +57,13 @@ export default function registerCard(pi: ExtensionAPI): void {
         }
 
       if (route === "unclear") {
-        if (ctx.isIdle()) return { action: "continue" as const };
+        if (ctx.isIdle()) {
+          if (combinedFallback) {
+            pi.sendUserMessage(text);
+            return { action: "handled" as const };
+          }
+          return { action: "continue" as const };
+        }
         queue.push({ kind: "followUp", message: text });
         ctx.ui.notify("Unclear intent; queued as a follow-up", "info");
         return { action: "handled" as const };
@@ -127,8 +133,15 @@ export default function registerCard(pi: ExtensionAPI): void {
       return { action: "continue" };
     }
 
-    if (debouncer) return debouncer.add(event.text, ctx);
+    if (debouncer) {
+      void debouncer.add(event.text, ctx);
+      return { action: "handled" };
+    }
     return routeText(event.text, ctx);
+  });
+
+  pi.on("session_shutdown", async () => {
+    await debouncer?.flush();
   });
 
   pi.on("agent_settled", (_event, ctx) => {

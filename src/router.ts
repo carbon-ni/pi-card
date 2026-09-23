@@ -7,11 +7,26 @@ export const ROUTE_TIMEOUT_MS = 1_500;
 
 type FetchLike = typeof fetch;
 
+export interface RouteDecision {
+  route: Route;
+  model?: string;
+  confidence: number;
+  probabilities: Record<Route, number>;
+}
+
 export async function classifyMessage(
   text: string,
   apiKey: string,
   fetcher: FetchLike = fetch,
 ): Promise<Route> {
+  return (await classifyMessageDetailed(text, apiKey, fetcher)).route;
+}
+
+export async function classifyMessageDetailed(
+  text: string,
+  apiKey: string,
+  fetcher: FetchLike = fetch,
+): Promise<RouteDecision> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ROUTE_TIMEOUT_MS);
 
@@ -65,13 +80,18 @@ export async function classifyMessage(
       Math.abs(ROUTES.reduce((sum, route) => sum + answer.probabilities[route], 0) - 1) > 0.02
     ) throw new Error("Invalid TypeSafe route answer");
 
-    const route = answer.choice as Route;
-    if (route === "stop") {
-      return answer.probabilities.stop >= STOP_THRESHOLD && answer.confidence >= ROUTE_CONFIDENCE_THRESHOLD
+    const choice = answer.choice as Route;
+    const route = choice === "stop"
+      ? answer.probabilities.stop >= STOP_THRESHOLD && answer.confidence >= ROUTE_CONFIDENCE_THRESHOLD
         ? "stop"
-        : "unclear";
-    }
-    return answer.confidence >= ROUTE_CONFIDENCE_THRESHOLD ? route : "unclear";
+        : "unclear"
+      : answer.confidence >= ROUTE_CONFIDENCE_THRESHOLD ? choice : "unclear";
+    return {
+      route,
+      model: typeof payload.model === "string" ? payload.model : undefined,
+      confidence: answer.confidence,
+      probabilities: answer.probabilities as Record<Route, number>,
+    };
   } finally {
     clearTimeout(timeout);
   }

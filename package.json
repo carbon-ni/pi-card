@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "pi": { "extensions": ["./src/index.ts"] },
-  "scripts": { "lint": "tsc --noEmit", "test": "vitest run", "test:coverage": "vitest run --coverage" },
+  "scripts": { "lint": "tsc --noEmit", "test": "vitest run",     "test:coverage": "vitest run --coverage",
+    "eval:jev": "node --experimental-strip-types scripts/eval-jev.ts" },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.82.0",
     "@vitest/coverage-v8": "4.1.6",

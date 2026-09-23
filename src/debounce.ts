@@ -30,7 +30,7 @@ export class TimeGapDebouncer<T, C> {
   add(text: string, context: C): Promise<T> {
     if (text.length > MAX_BATCH_CHARS) return this.process(text, context);
 
-    if (this.current && this.current.parts.join("\n").length + text.length + 1 > MAX_BATCH_CHARS) {
+    if (this.current && this.current.parts.join("\n\n").length + text.length + 2 > MAX_BATCH_CHARS) {
       void this.flushBatch(this.current);
     }
 
@@ -59,7 +59,7 @@ export class TimeGapDebouncer<T, C> {
     if (batch.timer) clearTimeout(batch.timer);
     if (this.current === batch) this.current = undefined;
 
-    batch.flushing = this.process(batch.parts.join("\n"), batch.context);
+    batch.flushing = this.process(batch.parts.join("\n\n"), batch.context);
     batch.flushing.then(
       (result) => batch.waiters.forEach((resolve) => resolve(result)),
       () => batch.waiters.forEach((resolve) => resolve(undefined as T)),
