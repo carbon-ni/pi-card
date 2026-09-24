@@ -96,6 +96,7 @@ function timestampInRange(value, earliest, latest) {
 }
 
 function textOf(content) {
+  if (typeof content === "string") return content.trim();
   if (!Array.isArray(content)) return "";
   return content.filter((part) => part?.type === "text" && typeof part.text === "string")
     .map((part) => part.text).join(" ").trim();
@@ -160,7 +161,7 @@ async function mine({ files, limit, output, project, since, until }) {
       try { row = JSON.parse(lines[index]); }
       catch { throw new Error(`Malformed selected session JSONL (${path.basename(file)}:${index + 1}); no output written`); }
       if (row.type !== "message" || !["user", "assistant"].includes(row.message?.role)) continue;
-      if (!timestampInRange(row.message.timestamp, earliest, latest)) continue;
+      if (!timestampInRange(row.timestamp, earliest, latest)) continue;
       const text = textOf(row.message.content);
       if (text) messages.push({ role: row.message.role, text, id: `${path.basename(file)}:${index + 1}` });
     }

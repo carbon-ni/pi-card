@@ -10,13 +10,12 @@ const execFile = promisify(execFileCallback);
 const script = path.join(import.meta.dirname, "../skills/pi-card-callibration/scripts/mine-sessions.mjs");
 const date = "2026-09-20";
 
-function message(role, text, timestamp = `${date}T12:00:00.000Z`) {
-  const message = { role, content: [{ type: "text", text }] };
-  if (timestamp !== null) {
-    const parsed = typeof timestamp === "number" ? timestamp : Date.parse(timestamp);
-    message.timestamp = Number.isFinite(parsed) ? parsed : timestamp;
-  }
-  return JSON.stringify({ type: "message", message });
+function message(role, text, timestamp = `${date}T12:00:00.000Z`, stringContent = false) {
+  const message = { role, content: stringContent ? text : [{ type: "text", text }] };
+  const parsed = typeof timestamp === "number" ? timestamp : Date.parse(timestamp);
+  const row = { type: "message", message };
+  if (timestamp !== null) row.timestamp = Number.isFinite(parsed) ? parsed : timestamp;
+  return JSON.stringify(row);
 }
 
 async function fixture(prefix = "pi-card-callibration-test-") {
@@ -67,7 +66,7 @@ test("mines only matching project/date user messages with redaction and short co
       rows: [
         message("user", "out-of-range old request", "2026-09-19T23:59:59.999Z"),
         message("assistant", "out-of-range context", "2026-09-19T23:59:59.999Z"),
-        message("user", "older request", "2026-09-20T00:00:00.000Z"),
+        message("user", "older request", "2026-09-20T00:00:00.000Z", true),
         message("assistant", "brief previous context"),
         message("user", "Stop and retry. Contact me at test.person@example.com. key-12345678901234567890"),
         message("assistant", "not a candidate", "2026-09-21T00:00:00.000Z"),
@@ -91,6 +90,24 @@ test("mines only matching project/date user messages with redaction and short co
     assert.equal(result.candidates[0].label, null);
     assert.equal(result.candidates[0].activeStatus, "unknown");
     assert.doesNotMatch(JSON.stringify(result), /out of scope|out of range|not a candidate|missing timestamp|invalid timestamp/);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("supports Pi's documented top-level timestamps and string user content", async () => {
+  const f = await fixture();
+  try {
+    const row = {
+      type: "message",
+      timestamp: Date.parse(`${date}T08:15:00.000Z`),
+      message: { role: "user", content: "Please steer toward the simpler solution." },
+    };
+    await writeFile(path.join(f.sessions, "documented-format.jsonl"), [
+      JSON.stringify({ type: "session", cwd: f.project, timestamp: `${date}T08:00:00.000Z` }),
+      JSON.stringify(row),
+    ].join("\n") + "\n");
+    await runMiner({ ...f, consent: "yes" });
+    const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.deepEqual(result.candidates.map(({ text }) => text), [row.message.content]);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
