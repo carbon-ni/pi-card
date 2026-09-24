@@ -305,10 +305,17 @@ async function mine({ files, html, limit, output, project, since, until }) {
   const outputPath = path.join(canonicalAgentDir, output);
   const projectPath = await realpath(project);
   const requestedProjectPath = path.resolve(project);
-  const projectPaths = [...new Set([projectPath, requestedProjectPath])];
+  const projectPaths = [projectPath, requestedProjectPath];
+  if (typeof process.env.PWD === "string" && path.isAbsolute(process.env.PWD)) {
+    const shellProjectPath = path.resolve(process.env.PWD);
+    try {
+      if (await realpath(shellProjectPath) === projectPath) projectPaths.push(shellProjectPath);
+    } catch { /* Ignore stale or invalid PWD values. */ }
+  }
+  const uniqueProjectPaths = [...new Set(projectPaths)];
   const earliest = Date.parse(`${since}T00:00:00Z`);
   const latest = Date.parse(`${until}T23:59:59.999Z`);
-  const filenameCandidates = await collectProjectFiles(canonicalRoot, projectPaths, since, until, files);
+  const filenameCandidates = await collectProjectFiles(canonicalRoot, uniqueProjectPaths, since, until, files);
   const eligible = [];
   for (const file of filenameCandidates) {
     let header;

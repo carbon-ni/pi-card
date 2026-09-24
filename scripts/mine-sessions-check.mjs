@@ -362,6 +362,30 @@ test("limits session reads to five files in the current project's directory", as
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("preserves a verified shell project alias without trusting unrelated PWD values", async () => {
+  const f = await fixture("pi-card-shell-project-alias-");
+  const alias = `${f.project}-shell-alias`;
+  const foreignProject = path.join(f.root, "foreign-project");
+  try {
+    await symlink(f.project, alias);
+    const aliasSessions = path.join(f.sessionsRoot, sessionDirectoryName(alias));
+    await mkdir(aliasSessions);
+    await writeSession(aliasSessions, "alias.jsonl", { cwd: f.project, rows: [message("user", "verified shell alias")] });
+    await runMiner({ ...f, consent: "yes", env: { PWD: alias } });
+    let result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.deepEqual(result.candidates.map(({ text }) => text), ["verified shell alias"]);
+
+    await rm(await outputFile(f));
+    await mkdir(foreignProject);
+    const foreignSessions = path.join(f.sessionsRoot, sessionDirectoryName(foreignProject));
+    await mkdir(foreignSessions);
+    await writeSession(foreignSessions, "foreign.jsonl", { cwd: foreignProject, rows: [message("user", "must stay out of scope")] });
+    await runMiner({ ...f, consent: "yes", env: { PWD: foreignProject } });
+    result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.deepEqual(result.candidates, []);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("accepts a symlinked configured agent path and resolves it before session access", async () => {
   const f = await fixture("pi-card-agent-alias-");
   const alias = `${f.agentDir}-alias`;
