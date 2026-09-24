@@ -336,18 +336,19 @@ async function mine({ files, html, limit, output, project, since, until }) {
       continue;
     }
     const timestamp = Date.parse(header.timestamp);
+    if (header.type !== "session" || typeof header.cwd !== "string" || !path.isAbsolute(header.cwd) ||
+        !Number.isFinite(timestamp) || timestamp < earliest || timestamp > latest) {
+      skippedSessionHeaders++;
+      continue;
+    }
     let headerProject;
     try { headerProject = await realpath(header.cwd); }
     catch {
       skippedSessionHeaders++;
       continue;
     }
-    if (header.type === "session" && headerProject === projectPath &&
-        Number.isFinite(timestamp) && timestamp >= earliest && timestamp <= latest) {
-      eligible.push({ file, timestamp });
-    } else {
-      skippedSessionHeaders++;
-    }
+    if (headerProject === projectPath) eligible.push({ file, timestamp });
+    else skippedSessionHeaders++;
   }
   eligible.sort((a, b) => b.timestamp - a.timestamp || a.file.localeCompare(b.file));
   const selected = eligible;

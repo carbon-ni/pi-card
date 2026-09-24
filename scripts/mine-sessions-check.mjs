@@ -84,7 +84,7 @@ async function sessionReadInstrumentation(root) {
   return { hook, openLog, headerReadLog };
 }
 
-function runMiner({ agentDir, project, output, env = {}, root: _fixtureRoot, sessions: _fixtureSessions, sessionsRoot: _fixtureSessionsRoot, ...args }) {
+function runMiner({ agentDir, project, output, env = {}, cwd = process.cwd(), root: _fixtureRoot, sessions: _fixtureSessions, sessionsRoot: _fixtureSessionsRoot, ...args }) {
   const options = [
     "--project", project,
     "--since", date,
@@ -93,6 +93,7 @@ function runMiner({ agentDir, project, output, env = {}, root: _fixtureRoot, ses
     ...Object.entries(args).flatMap(([key, value]) => [`--${key}`, String(value)]),
   ];
   return execFile(process.execPath, [script, ...options], {
+    cwd,
     env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, ...env },
   });
 }
@@ -454,6 +455,55 @@ test("validates lossy Pi project-directory collisions before reading transcripts
     assert.equal(result.skippedSessionHeaders, 1);
     const oneFileReads = (await readFile(instrumentation.openLog, "utf8")).trim().split("\n");
     assert.deepEqual(oneFileReads, [canonicalForeignFile], "the older requested-project transcript stays unopened");
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("skips relative, missing, and non-string header cwd values before transcript reads", async () => {
+  const f = await fixture("pi-card-session-cwd-validation-");
+  const requestedProject = path.join(f.root, "a-b", "c");
+  const collidingProject = path.join(f.root, "a", "b-c");
+  try {
+    await mkdir(requestedProject, { recursive: true });
+    await mkdir(collidingProject, { recursive: true });
+    const sharedDirectory = path.join(f.sessionsRoot, sessionDirectoryName(requestedProject));
+    await mkdir(sharedDirectory);
+    const foreignFile = sessionFilename(`${date}T14:00:00.000Z`, "foreign-cwd");
+    const targetFile = sessionFilename(`${date}T13:00:00.000Z`, "requested-cwd");
+    await writeSession(sharedDirectory, targetFile, {
+      cwd: requestedProject,
+      timestamp: `${date}T13:00:00.000Z`,
+      rows: [message("user", "requested project only")],
+    });
+
+    const variants = [
+      { name: "relative cwd", header: { type: "session", cwd: ".", timestamp: `${date}T14:00:00.000Z` } },
+      { name: "missing cwd", header: { type: "session", timestamp: `${date}T14:00:00.000Z` } },
+      { name: "non-string cwd", header: { type: "session", cwd: null, timestamp: `${date}T14:00:00.000Z` } },
+    ];
+    const instrumentation = await sessionReadInstrumentation(f.root);
+    const env = {
+      NODE_OPTIONS: `--import ${instrumentation.hook}`,
+      PI_CARD_SESSION_OPEN_LOG: instrumentation.openLog,
+      PI_CARD_HEADER_READ_LOG: instrumentation.headerReadLog,
+    };
+    const canonicalForeignFile = path.join(await realpath(sharedDirectory), foreignFile);
+
+    for (const { name, header } of variants) {
+      await rm(await outputFile(f), { force: true });
+      await writeFile(instrumentation.openLog, "");
+      await writeFile(instrumentation.headerReadLog, "");
+      await writeFile(path.join(sharedDirectory, foreignFile), [
+        JSON.stringify(header),
+        message("user", "foreign transcript must not be read", `${date}T14:00:00.000Z`),
+      ].join("\n") + "\n");
+
+      await runMiner({ ...f, project: requestedProject, cwd: requestedProject, consent: "yes", env });
+      const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+      assert.deepEqual(result.candidates.map(({ text }) => text), ["requested project only"], name);
+      assert.equal(result.skippedSessionHeaders, 1, name);
+      const opened = (await readFile(instrumentation.openLog, "utf8")).trim().split("\n");
+      assert.equal(opened.filter((file) => file === canonicalForeignFile).length, 1, `${name}: header only; no transcript open`);
+    }
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
