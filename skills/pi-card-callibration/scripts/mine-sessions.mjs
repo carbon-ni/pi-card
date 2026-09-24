@@ -8,9 +8,7 @@ import process from "node:process";
 
 const MAX_FILES = 5;
 const MAX_CANDIDATES = 20;
-const MAX_DISCOVERED_FILES = 2_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const MAX_DEPTH = 4;
 const MAX_CONTEXT_CHARS = 240;
 const MAX_MESSAGE_CHARS = 1_000;
 
@@ -45,26 +43,35 @@ function parseArgs(args) {
   return options;
 }
 
-async function collectFiles(directory, root, depth = 0, found = []) {
-  if (depth > MAX_DEPTH) return found;
-  const directoryStat = await lstat(directory);
-  if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) return found;
-  const canonicalDirectory = await realpath(directory);
-  const relativeDirectory = path.relative(root, canonicalDirectory);
-  if (relativeDirectory.startsWith("..") || path.isAbsolute(relativeDirectory)) return found;
-  const entries = await readdir(canonicalDirectory, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    const fullPath = path.join(directory, entry.name);
-    // Dirent checks deliberately ignore symlinks, both for directories and files.
-    if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      found.push(fullPath);
-      if (found.length > MAX_DISCOVERED_FILES) throw new Error("Too many session files; narrow the selected sessions root");
-    } else if (entry.isDirectory() && depth < MAX_DEPTH) {
-      await collectFiles(fullPath, root, depth + 1, found);
+function projectSessionDirectory(project) {
+  return `--${project.replaceAll("/", "-")}--`;
+}
+
+function sessionDateFromFilename(filename) {
+  const match = /^(\d{4}-\d{2}-\d{2})T[^/]+Z_[^/]+\.jsonl$/.exec(filename);
+  return match?.[1] ?? null;
+}
+
+async function collectProjectFiles(root, projects, since, until, limit) {
+  const candidates = [];
+  for (const project of projects) {
+    const directory = path.join(root, projectSessionDirectory(project));
+    let directoryStat;
+    try { directoryStat = await lstat(directory); }
+    catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) continue;
+    const canonicalDirectory = await realpath(directory);
+    const relativeDirectory = path.relative(root, canonicalDirectory);
+    if (relativeDirectory.startsWith("..") || path.isAbsolute(relativeDirectory)) continue;
+    const entries = await readdir(canonicalDirectory, { withFileTypes: true });
+    for (const entry of entries) {
+      const date = sessionDateFromFilename(entry.name);
+      if (!entry.isFile() || !date || date < since || date > until) continue;
+      candidates.push({ file: path.join(canonicalDirectory, entry.name), name: entry.name });
     }
   }
-  return found;
+  candidates.sort((a, b) => b.name.localeCompare(a.name) || a.file.localeCompare(b.file));
+  return candidates.slice(0, limit).map(({ file }) => file);
 }
 
 async function withNoFollow(file, callback) {
@@ -285,9 +292,11 @@ async function writeOutputs({ htmlPath, htmlText, outputPath, outputText }) {
 
 async function mine({ files, html, limit, output, project, since, until }) {
   const agentDir = path.resolve(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent"));
-  const agentStat = await lstat(agentDir);
-  if (agentStat.isSymbolicLink() || !agentStat.isDirectory()) throw new Error("Pi agent config directory must be a real directory, not a symlink");
-  const canonicalAgentDir = await realpath(agentDir);
+  let canonicalAgentDir;
+  try { canonicalAgentDir = await realpath(agentDir); }
+  catch { throw new Error("Configured Pi agent directory does not exist"); }
+  const agentStat = await lstat(canonicalAgentDir);
+  if (agentStat.isSymbolicLink() || !agentStat.isDirectory()) throw new Error("Pi agent config directory must resolve to a real directory");
   const sessions = path.join(canonicalAgentDir, "sessions");
   const sessionsStat = await lstat(sessions);
   if (sessionsStat.isSymbolicLink() || !sessionsStat.isDirectory()) throw new Error("Pi sessions directory must be a real directory, not a symlink");
@@ -295,18 +304,13 @@ async function mine({ files, html, limit, output, project, since, until }) {
   if (canonicalRoot !== sessions) throw new Error("Pi sessions directory resolves outside the configured agent directory");
   const outputPath = path.join(canonicalAgentDir, output);
   const projectPath = await realpath(project);
+  const requestedProjectPath = path.resolve(project);
+  const projectPaths = [...new Set([projectPath, requestedProjectPath])];
   const earliest = Date.parse(`${since}T00:00:00Z`);
   const latest = Date.parse(`${until}T23:59:59.999Z`);
-  const allFiles = await collectFiles(canonicalRoot, canonicalRoot);
+  const filenameCandidates = await collectProjectFiles(canonicalRoot, projectPaths, since, until, files);
   const eligible = [];
-  for (const file of allFiles) {
-    let canonicalFile;
-    try { canonicalFile = await realpath(file); }
-    catch { continue; }
-    const relativeFile = path.relative(canonicalRoot, canonicalFile);
-    if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile)) continue;
-    const fileStat = await lstat(file);
-    if (fileStat.isSymbolicLink() || !fileStat.isFile()) continue;
+  for (const file of filenameCandidates) {
     let header;
     try { header = await readHeader(file); }
     catch { throw new Error(`Malformed or unreadable session header (${path.basename(file)}); no output written`); }
@@ -314,12 +318,13 @@ async function mine({ files, html, limit, output, project, since, until }) {
     let headerProject;
     try { headerProject = await realpath(header.cwd); }
     catch { continue; }
-    if (header.type === "session" && headerProject === projectPath && timestamp >= earliest && timestamp <= latest) {
+    if (header.type === "session" && headerProject === projectPath &&
+        Number.isFinite(timestamp) && timestamp >= earliest && timestamp <= latest) {
       eligible.push({ file, timestamp });
     }
   }
   eligible.sort((a, b) => b.timestamp - a.timestamp || a.file.localeCompare(b.file));
-  const selected = eligible.slice(0, files);
+  const selected = eligible;
   const results = [];
   for (const { file } of selected) {
     let contents;

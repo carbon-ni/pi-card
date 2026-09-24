@@ -22,21 +22,35 @@ function message(role, text, timestamp = `${date}T12:00:00.000Z`, stringContent 
   return JSON.stringify(row);
 }
 
+function sessionDirectoryName(project) {
+  return `--${project.replaceAll("/", "-")}--`;
+}
+
+function sessionFilename(timestamp, id = "fixture") {
+  return `${new Date(timestamp).toISOString().replaceAll(":", "-").replace(".", "-")}_${id}.jsonl`;
+}
+
 async function fixture(prefix = "pi-card-callibration-test-") {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
-  const sessions = path.join(root, "sessions");
+  const sessionsRoot = path.join(root, "sessions");
   const project = path.join(root, "project");
-  await mkdir(sessions);
+  await mkdir(sessionsRoot);
   await mkdir(project);
-  return { root, agentDir: root, sessions, project, output: "candidates.json" };
+  const sessions = path.join(sessionsRoot, sessionDirectoryName(project));
+  await mkdir(sessions);
+  return { root, agentDir: root, sessionsRoot, sessions, project, output: "candidates.json" };
 }
 
 async function writeSession(directory, filename, { cwd, timestamp = `${date}T12:00:00.000Z`, rows = [] } = {}) {
+  const file = filename.endsWith(".jsonl") && /^\d{4}-\d{2}-\d{2}T/.test(filename)
+    ? filename
+    : sessionFilename(timestamp, filename.replace(/\.jsonl$/, ""));
   const content = [JSON.stringify({ type: "session", cwd, timestamp }), ...rows].join("\n") + "\n";
-  await writeFile(path.join(directory, filename), content);
+  await writeFile(path.join(directory, file), content);
+  return path.join(directory, file);
 }
 
-function runMiner({ agentDir, project, output, root: _fixtureRoot, sessions: _fixtureSessions, ...args }) {
+function runMiner({ agentDir, project, output, env = {}, root: _fixtureRoot, sessions: _fixtureSessions, sessionsRoot: _fixtureSessionsRoot, ...args }) {
   const options = [
     "--project", project,
     "--since", date,
@@ -45,7 +59,7 @@ function runMiner({ agentDir, project, output, root: _fixtureRoot, sessions: _fi
     ...Object.entries(args).flatMap(([key, value]) => [`--${key}`, String(value)]),
   ];
   return execFile(process.execPath, [script, ...options], {
-    env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+    env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, ...env },
   });
 }
 
@@ -125,7 +139,7 @@ test("supports Pi's documented top-level timestamps and string user content", as
       timestamp: Date.parse(`${date}T08:15:00.000Z`),
       message: { role: "user", content: "Please steer toward the simpler solution." },
     };
-    await writeFile(path.join(f.sessions, "documented-format.jsonl"), [
+    await writeFile(path.join(f.sessions, sessionFilename(`${date}T08:00:00.000Z`, "documented-format")), [
       JSON.stringify({ type: "session", cwd: f.project, timestamp: `${date}T08:00:00.000Z` }),
       JSON.stringify(row),
     ].join("\n") + "\n");
@@ -287,9 +301,7 @@ test("caps file and candidate counts and refuses to overwrite output", async () 
   const f = await fixture();
   try {
     for (let i = 0; i < 6; i++) {
-      const dir = path.join(f.sessions, `thread-${i}`);
-      await mkdir(dir);
-      await writeSession(dir, `session-${i}.jsonl`, { cwd: f.project, timestamp: `${date}T${String(i).padStart(2, "0")}:00:00Z`, rows: [message("user", `candidate ${i}`)] });
+      await writeSession(f.sessions, `session-${i}.jsonl`, { cwd: f.project, timestamp: `${date}T${String(i).padStart(2, "0")}:00:00Z`, rows: [message("user", `candidate ${i}`)] });
     }
     await runMiner({ ...f, consent: "yes", files: 5, limit: 2 });
     const file = await outputFile(f);
@@ -302,17 +314,79 @@ test("caps file and candidate counts and refuses to overwrite output", async () 
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test("limits session reads to five files in the current project's directory", async () => {
+  const f = await fixture("pi-card-bounded-discovery-");
+  try {
+    const unrelated = path.join(f.sessionsRoot, "--unrelated-project--");
+    await mkdir(unrelated);
+    for (let i = 0; i < 2_100; i++) {
+      await writeFile(path.join(unrelated, sessionFilename(`${date}T12:00:00.000Z`, `unrelated-${i}`)), "not inspected\n");
+    }
+    for (let i = 0; i < 8; i++) {
+      await writeSession(f.sessions, `target-${i}.jsonl`, {
+        cwd: f.project,
+        timestamp: `${date}T${String(i).padStart(2, "0")}:00:00.000Z`,
+        rows: [message("user", `target ${i}`)],
+      });
+    }
+
+    const hook = path.join(f.root, "count-session-opens.mjs");
+    const openLog = path.join(f.root, "opened-sessions.log");
+    await writeFile(hook, `
+      import fs from "node:fs/promises";
+      import { appendFileSync } from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      const originalOpen = fs.open;
+      fs.open = async function (file, ...args) {
+        const name = String(file);
+        if (name.endsWith(".jsonl")) appendFileSync(process.env.PI_CARD_SESSION_OPEN_LOG, name + "\\n");
+        return originalOpen.call(this, file, ...args);
+      };
+      syncBuiltinESMExports();
+    `);
+
+    await runMiner({
+      ...f,
+      consent: "yes",
+      env: { NODE_OPTIONS: `--import ${hook}`, PI_CARD_SESSION_OPEN_LOG: openLog },
+    });
+    const opened = (await readFile(openLog, "utf8")).trim().split("\n");
+    const openedPaths = new Set(opened);
+    assert.equal(openedPaths.size, 5, "only five selected session files are opened");
+    assert.equal(opened.length, 10, "each selected file is opened once for its header and once for its transcript");
+    const canonicalSessions = await realpath(f.sessions);
+    assert.ok([...openedPaths].every((file) => file.startsWith(canonicalSessions + path.sep)));
+    const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.equal(result.selectedSessionFiles, 5);
+    assert.deepEqual(result.candidates.map(({ text }) => text), ["target 7", "target 6", "target 5", "target 4", "target 3"]);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("accepts a symlinked configured agent path and resolves it before session access", async () => {
+  const f = await fixture("pi-card-agent-alias-");
+  const alias = `${f.agentDir}-alias`;
+  try {
+    await symlink(f.agentDir, alias);
+    await writeSession(f.sessions, "alias-session.jsonl", { cwd: f.project, rows: [message("user", "alias path works")] });
+    await runMiner({ ...f, consent: "yes", env: { PI_CODING_AGENT_DIR: alias } });
+    const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.deepEqual(result.candidates.map(({ text }) => text), ["alias path works"]);
+  } finally {
+    await rm(alias, { force: true });
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test("ignores symlinks and fails closed on malformed matching session data", async () => {
   const f = await fixture();
   try {
-    const external = path.join(f.root, "external.jsonl");
-    await writeSession(f.root, "external.jsonl", { cwd: f.project, rows: [message("user", "external")] });
-    await symlink(external, path.join(f.sessions, "linked.jsonl"));
+    const external = await writeSession(f.root, "external.jsonl", { cwd: f.project, rows: [message("user", "external")] });
+    await symlink(external, path.join(f.sessions, sessionFilename(`${date}T12:00:00.000Z`, "linked")));
     await runMiner({ ...f, consent: "yes" });
     assert.equal(JSON.parse(await readFile(await outputFile(f), "utf8")).selectedSessionFiles, 0);
 
     await rm(await outputFile(f));
-    await writeFile(path.join(f.sessions, "broken.jsonl"), `${JSON.stringify({ type: "session", cwd: f.project, timestamp: `${date}T12:00:00Z` })}\n{bad json}\n`);
+    await writeFile(path.join(f.sessions, sessionFilename(`${date}T12:00:00.000Z`, "broken")), `${JSON.stringify({ type: "session", cwd: f.project, timestamp: `${date}T12:00:00Z` })}\n{bad json}\n`);
     await assert.rejects(runMiner({ ...f, consent: "yes" }), /Malformed selected session JSONL/);
     await assert.rejects(readFile(await outputFile(f)), { code: "ENOENT" });
   } finally { await rm(f.root, { recursive: true, force: true }); }
@@ -323,8 +397,8 @@ test("rejects symlinked session roots, unbounded paths, and reversed ranges", as
   try {
     const outsideSessions = path.join(f.root, "outside-sessions");
     await mkdir(outsideSessions);
-    await rm(f.sessions, { recursive: true });
-    await symlink(outsideSessions, f.sessions);
+    await rm(f.sessionsRoot, { recursive: true });
+    await symlink(outsideSessions, f.sessionsRoot);
     const env = { ...process.env, PI_CODING_AGENT_DIR: f.root };
     await assert.rejects(execFile(process.execPath, [script, "--consent", "yes", "--project", f.project, "--since", date, "--until", date, "--output", f.output], { env }), /Pi sessions directory must be a real directory/);
     await assert.rejects(runMiner({ ...f, consent: "yes", output: "../outside.json" }), /Usage: mine-sessions/);
@@ -342,7 +416,9 @@ test("canonicalizes the requested project path before matching session metadata"
   const alias = `${f.project}-alias`;
   try {
     await symlink(f.project, alias);
-    await writeSession(f.sessions, "canonical.jsonl", { cwd: f.project, rows: [message("user", "canonical project match")] });
+    const aliasSessions = path.join(f.sessionsRoot, sessionDirectoryName(alias));
+    await mkdir(aliasSessions);
+    await writeSession(aliasSessions, "canonical.jsonl", { cwd: f.project, rows: [message("user", "canonical project match")] });
     await runMiner({ ...f, project: alias, consent: "yes" });
     const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
     assert.equal(result.project, "[REDACTED_PATH]");
