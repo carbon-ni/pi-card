@@ -206,7 +206,7 @@ async function mine({ files, limit, output, project, since, until }) {
     }
     if (results.length >= limit) break;
   }
-  const result = { source: "local-pi-sessions", project: projectPath, dateRange: { since, until }, selectedSessionFiles: selected.length, candidates: results };
+  const result = { source: "local-pi-sessions", project: "[REDACTED_PATH]", dateRange: { since, until, timeZone: "UTC" }, selectedSessionFiles: selected.length, candidates: results };
   await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   return result;
 }

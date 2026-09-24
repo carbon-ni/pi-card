@@ -81,8 +81,11 @@ test("mines only matching project/date user messages with redaction and short co
 
     await runMiner({ ...f, consent: "yes", files: 5, limit: 20 });
     const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
-    assert.equal(result.project, await realpath(f.project));
-    assert.deepEqual(result.dateRange, { since: date, until: date });
+    assert.equal(result.project, "[REDACTED_PATH]");
+    const canonicalProject = await realpath(f.project);
+    assert.notEqual(result.project, canonicalProject);
+    assert.ok(!JSON.stringify(result).includes(canonicalProject));
+    assert.deepEqual(result.dateRange, { since: date, until: date, timeZone: "UTC" });
     assert.equal(result.selectedSessionFiles, 1);
     assert.equal(result.candidates.length, 2);
     assert.match(result.candidates[0].text, /\[REDACTED_EMAIL\]/);
@@ -231,7 +234,7 @@ test("canonicalizes the requested project path before matching session metadata"
     await writeSession(f.sessions, "canonical.jsonl", { cwd: f.project, rows: [message("user", "canonical project match")] });
     await runMiner({ ...f, project: alias, consent: "yes" });
     const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
-    assert.equal(result.project, await realpath(f.project));
+    assert.equal(result.project, "[REDACTED_PATH]");
     assert.deepEqual(result.candidates.map(({ text }) => text), ["canonical project match"]);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
