@@ -12,9 +12,9 @@ Type what you want in plain English. Pi Card understands whether to interrupt, r
 <br />
 <br />
 
-## Install after release
+## Install v0.1.0 (without the calibration skill)
 
-Once the `v0.1.0` GitHub release exists, install its tagged source:
+These commands install the v0.1.0 release. This version does not include the session-calibration skill:
 
 ```sh
 pi install git:github.com/carbon-ni/pi-card@v0.1.0
@@ -33,7 +33,7 @@ To move a Git installation to another release tag, reinstall it with the new tag
 pi install git:github.com/carbon-ni/pi-card@vX.Y.Z
 ```
 
-The `/skill:pi-card-callibration` session-calibration skill is a later package addition and is not included in the `v0.1.0` release. Install a future release that includes it before invoking the skill.
+The `/skill:pi-card-callibration` session-calibration skill is planned for the next release; it is not included in `v0.1.0`. Install that next release before invoking the skill.
 
 ## Try it
 

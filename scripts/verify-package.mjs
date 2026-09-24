@@ -62,13 +62,21 @@ try {
   const smoke = path.join(consumer, "verify-extension-load.mjs");
   await writeFile(smoke, `
     import path from "node:path";
+    import { readFile } from "node:fs/promises";
     import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+    const packageRoot = path.resolve(process.env.PI_CARD_PACKAGE_ROOT);
+    const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+    const extensionPaths = manifest.pi.extensions.map((resource) => path.resolve(packageRoot, resource));
+    const skillPaths = manifest.pi.skills.map((resource) => path.resolve(packageRoot, resource));
     const extensionPath = path.resolve(process.env.PI_CARD_EXTENSION);
+    if (!extensionPaths.includes(extensionPath)) throw new Error("Smoke extension path is not declared in the installed package manifest");
+    const skillPath = path.join(packageRoot, "skills");
+    if (!skillPaths.includes(skillPath)) throw new Error("Installed manifest skill path does not resolve to packaged skills");
     const loader = new DefaultResourceLoader({
       cwd: process.cwd(),
       agentDir: process.env.PI_CARD_AGENT_DIR,
-      additionalExtensionPaths: [extensionPath],
-      additionalSkillPaths: [path.resolve(process.env.PI_CARD_SKILLS)],
+      additionalExtensionPaths: extensionPaths,
+      additionalSkillPaths: skillPaths,
       noSkills: false,
       noPromptTemplates: true,
       noThemes: true,
@@ -92,7 +100,7 @@ try {
     env: {
       ...process.env,
       PI_CARD_EXTENSION: path.join(installed, "src/index.ts"),
-      PI_CARD_SKILLS: path.join(installed, "skills"),
+      PI_CARD_PACKAGE_ROOT: installed,
       PI_CARD_AGENT_DIR: agentDir,
     },
   });

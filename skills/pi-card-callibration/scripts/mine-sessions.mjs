@@ -90,6 +90,11 @@ async function readSession(file) {
   });
 }
 
+function timestampInRange(value, earliest, latest) {
+  const timestamp = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(timestamp) && timestamp >= earliest && timestamp <= latest;
+}
+
 function textOf(content) {
   if (!Array.isArray(content)) return "";
   return content.filter((part) => part?.type === "text" && typeof part.text === "string")
@@ -155,6 +160,7 @@ async function mine({ files, limit, output, project, since, until }) {
       try { row = JSON.parse(lines[index]); }
       catch { throw new Error(`Malformed selected session JSONL (${path.basename(file)}:${index + 1}); no output written`); }
       if (row.type !== "message" || !["user", "assistant"].includes(row.message?.role)) continue;
+      if (!timestampInRange(row.message.timestamp, earliest, latest)) continue;
       const text = textOf(row.message.content);
       if (text) messages.push({ role: row.message.role, text, id: `${path.basename(file)}:${index + 1}` });
     }

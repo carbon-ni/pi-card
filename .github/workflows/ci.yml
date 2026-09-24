@@ -19,4 +19,5 @@ jobs:
       - run: npm test
       - run: npm run test:package-verifier
       - run: npm run test:release-publish
+      - run: npm run test:callibration
       - run: npm run verify:package

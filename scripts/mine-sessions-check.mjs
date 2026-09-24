@@ -10,8 +10,13 @@ const execFile = promisify(execFileCallback);
 const script = path.join(import.meta.dirname, "../skills/pi-card-callibration/scripts/mine-sessions.mjs");
 const date = "2026-09-20";
 
-function message(role, text) {
-  return JSON.stringify({ type: "message", message: { role, content: [{ type: "text", text }] } });
+function message(role, text, timestamp = `${date}T12:00:00.000Z`) {
+  const message = { role, content: [{ type: "text", text }] };
+  if (timestamp !== null) {
+    const parsed = typeof timestamp === "number" ? timestamp : Date.parse(timestamp);
+    message.timestamp = Number.isFinite(parsed) ? parsed : timestamp;
+  }
+  return JSON.stringify({ type: "message", message });
 }
 
 async function fixture(prefix = "pi-card-callibration-test-") {
@@ -60,10 +65,14 @@ test("mines only matching project/date user messages with redaction and short co
     await writeSession(f.sessions, "match.jsonl", {
       cwd: f.project,
       rows: [
-        message("user", "older request"),
+        message("user", "out-of-range old request", "2026-09-19T23:59:59.999Z"),
+        message("assistant", "out-of-range context", "2026-09-19T23:59:59.999Z"),
+        message("user", "older request", "2026-09-20T00:00:00.000Z"),
         message("assistant", "brief previous context"),
         message("user", "Stop and retry. Contact me at test.person@example.com. key-12345678901234567890"),
-        message("assistant", "not a candidate"),
+        message("assistant", "not a candidate", "2026-09-21T00:00:00.000Z"),
+        message("user", "missing timestamp", null),
+        message("assistant", "invalid timestamp", "invalid"),
       ],
     });
     await writeSession(f.sessions, "other-project.jsonl", { cwd: "/workspace/other", rows: [message("user", "out of scope")] });
@@ -81,7 +90,7 @@ test("mines only matching project/date user messages with redaction and short co
     assert.equal(result.candidates[1].text, "older request");
     assert.equal(result.candidates[0].label, null);
     assert.equal(result.candidates[0].activeStatus, "unknown");
-    assert.doesNotMatch(JSON.stringify(result), /out of scope|out of range|not a candidate/);
+    assert.doesNotMatch(JSON.stringify(result), /out of scope|out of range|not a candidate|missing timestamp|invalid timestamp/);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

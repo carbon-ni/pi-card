@@ -24,6 +24,7 @@ jobs:
       - run: npm test
       - run: npm run test:package-verifier
       - run: npm run test:release-publish
+      - run: npm run test:callibration
       - name: Verify release identity
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
