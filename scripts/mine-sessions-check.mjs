@@ -10,11 +10,13 @@ const execFile = promisify(execFileCallback);
 const script = path.join(import.meta.dirname, "../skills/pi-card-callibration/scripts/mine-sessions.mjs");
 const date = "2026-09-20";
 
-function message(role, text, timestamp = `${date}T12:00:00.000Z`, stringContent = false) {
+function message(role, text, timestamp = `${date}T12:00:00.000Z`, stringContent = false, id, parentId) {
   const message = { role, content: stringContent ? text : [{ type: "text", text }] };
   const parsed = typeof timestamp === "number" ? timestamp : Date.parse(timestamp);
   const row = { type: "message", message };
   if (timestamp !== null) row.timestamp = Number.isFinite(parsed) ? parsed : timestamp;
+  if (id) row.id = id;
+  if (parentId) row.parentId = parentId;
   return JSON.stringify(row);
 }
 
@@ -64,14 +66,14 @@ test("mines only matching project/date user messages with redaction and short co
     await writeSession(f.sessions, "match.jsonl", {
       cwd: f.project,
       rows: [
-        message("user", "out-of-range old request", "2026-09-19T23:59:59.999Z"),
-        message("assistant", "out-of-range context", "2026-09-19T23:59:59.999Z"),
-        message("user", "older request", "2026-09-20T00:00:00.000Z", true),
-        message("assistant", "brief previous context"),
-        message("user", "Stop and retry. Contact me at test.person@example.com. key-12345678901234567890"),
-        message("assistant", "not a candidate", "2026-09-21T00:00:00.000Z"),
-        message("user", "missing timestamp", null),
-        message("assistant", "invalid timestamp", "invalid"),
+        message("user", "out-of-range old request", "2026-09-19T23:59:59.999Z", false, "u0"),
+        message("assistant", "out-of-range context", "2026-09-19T23:59:59.999Z", false, "a0", "u0"),
+        message("user", "older request", "2026-09-20T00:00:00.000Z", true, "u1", "a0"),
+        message("assistant", "brief previous context", `${date}T12:00:00.000Z`, false, "a1", "u1"),
+        message("user", "Stop and retry. Contact me at test.person@example.com. key-12345678901234567890", `${date}T12:00:00.000Z`, false, "u2", "a1"),
+        message("assistant", "not a candidate", "2026-09-21T00:00:00.000Z", false, "a2", "u2"),
+        message("user", "missing timestamp", null, false, "u3", "a2"),
+        message("assistant", "invalid timestamp", "invalid", false, "a3", "u3"),
       ],
     });
     await writeSession(f.sessions, "other-project.jsonl", { cwd: "/workspace/other", rows: [message("user", "out of scope")] });
@@ -108,6 +110,47 @@ test("supports Pi's documented top-level timestamps and string user content", as
     await runMiner({ ...f, consent: "yes" });
     const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
     assert.deepEqual(result.candidates.map(({ text }) => text), [row.message.content]);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("uses the nearest in-range ancestor, not the adjacent message from an abandoned branch", async () => {
+  const f = await fixture();
+  try {
+    await writeSession(f.sessions, "branched.jsonl", {
+      cwd: f.project,
+      rows: [
+        message("user", "root request", undefined, false, "root"),
+        message("assistant", "shared context", undefined, false, "shared", "root"),
+        message("assistant", "correct branch context", undefined, false, "good", "shared"),
+        message("user", "abandoned branch request", undefined, false, "other-user", "shared"),
+        message("assistant", "misleading adjacent context", undefined, false, "other-assistant", "other-user"),
+        message("user", "current calibration candidate", undefined, false, "current", "good"),
+      ],
+    });
+    await runMiner({ ...f, consent: "yes" });
+    const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    const current = result.candidates.find(({ text }) => text === "current calibration candidate");
+    assert.equal(current.context, "correct branch context");
+    assert.doesNotMatch(JSON.stringify(current), /misleading adjacent context/);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("leaves context empty for missing or cyclic parent chains", async () => {
+  const f = await fixture();
+  try {
+    await writeSession(f.sessions, "cycles.jsonl", {
+      cwd: f.project,
+      rows: [
+        message("toolResult", "cycle one", undefined, false, "cycle-one", "cycle-two"),
+        message("toolResult", "cycle two", undefined, false, "cycle-two", "cycle-one"),
+        message("user", "cyclic parent candidate", undefined, false, "cyclic", "cycle-one"),
+        message("user", "missing parent candidate", undefined, false, "missing", "not-present"),
+      ],
+    });
+    await runMiner({ ...f, consent: "yes" });
+    const { candidates } = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.equal(candidates.find(({ text }) => text === "cyclic parent candidate").context, "");
+    assert.equal(candidates.find(({ text }) => text === "missing parent candidate").context, "");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

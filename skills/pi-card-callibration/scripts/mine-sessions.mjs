@@ -102,6 +102,20 @@ function textOf(content) {
     .map((part) => part.text).join(" ").trim();
 }
 
+function findAncestorContext(parentId, entriesById) {
+  const visited = new Set();
+  let currentId = parentId;
+  for (let depth = 0; typeof currentId === "string" && depth < 1_000; depth++) {
+    if (visited.has(currentId)) return "";
+    visited.add(currentId);
+    const ancestor = entriesById.get(currentId);
+    if (!ancestor) return "";
+    if (ancestor.message?.text) return ancestor.message.text;
+    currentId = ancestor.parentId;
+  }
+  return "";
+}
+
 function redact(text) {
   return text
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]")
@@ -155,24 +169,37 @@ async function mine({ files, limit, output, project, since, until }) {
     catch { throw new Error(`Oversized or unreadable selected session (${path.basename(file)}); no output written`); }
     const lines = contents.split("\n");
     const messages = [];
+    const entriesById = new Map();
+    const ambiguousIds = new Set();
     for (let index = 1; index < lines.length; index++) {
       if (!lines[index].trim()) continue;
       let row;
       try { row = JSON.parse(lines[index]); }
       catch { throw new Error(`Malformed selected session JSONL (${path.basename(file)}:${index + 1}); no output written`); }
+      const entry = { parentId: typeof row.parentId === "string" ? row.parentId : null, message: null };
+      if (typeof row.id === "string" && !ambiguousIds.has(row.id)) {
+        if (entriesById.has(row.id)) {
+          entriesById.delete(row.id);
+          ambiguousIds.add(row.id);
+        } else {
+          entriesById.set(row.id, entry);
+        }
+      }
       if (row.type !== "message" || !["user", "assistant"].includes(row.message?.role)) continue;
       if (!timestampInRange(row.timestamp, earliest, latest)) continue;
       const text = textOf(row.message.content);
-      if (text) messages.push({ role: row.message.role, text, id: `${path.basename(file)}:${index + 1}` });
+      if (!text) continue;
+      entry.message = { role: row.message.role, text };
+      messages.push({ ...entry.message, parentId: entry.parentId, rowId: row.id, id: `${path.basename(file)}:${index + 1}` });
     }
     for (let i = messages.length - 1; i >= 0 && results.length < limit; i--) {
       const message = messages[i];
       if (message.role !== "user") continue;
-      const previous = messages[i - 1];
+      const context = findAncestorContext(message.parentId, entriesById);
       results.push({
         id: message.id,
         text: redact(message.text).slice(0, MAX_MESSAGE_CHARS).trim(),
-        context: previous ? redact(previous.text).slice(-MAX_CONTEXT_CHARS).trim() : "",
+        context: context ? redact(context).slice(-MAX_CONTEXT_CHARS).trim() : "",
         activeStatus: "unknown",
         label: null,
       });
