@@ -248,7 +248,7 @@ body{font:16px/1.5 system-ui,sans-serif;max-width:880px;margin:2rem auto;padding
 </head>
 <body>
 <h1>Local Pi Card calibration review</h1>
-<p>This page is offline. Review and edit each redacted example, then label it. Nothing is sent anywhere and no Pi Card configuration is changed. Stop labels require a separate per-example confirmation.</p>
+<p>This page makes no network requests. Review and edit each redacted example, then label it. Pi Card configuration is unchanged. Stop labels require a separate per-example confirmation.</p>
 <p><small>Date range: ${result.dateRange.since} through ${result.dateRange.until} UTC. Delete this sensitive page after review.</small></p>
 <p id="summary" aria-live="polite"></p>
 <div id="candidate-list"></div>
