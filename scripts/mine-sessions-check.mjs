@@ -446,9 +446,10 @@ test("validates lossy Pi project-directory collisions before reading transcripts
     await rm(await outputFile(f));
     await writeFile(instrumentation.openLog, "");
     await writeFile(instrumentation.headerReadLog, "");
+    await writeFile(path.join(sharedDirectory, foreignFile), "null\n");
     await runMiner({ ...f, project: requestedProject, consent: "yes", files: 1, env: instrumentedEnv });
     result = JSON.parse(await readFile(await outputFile(f), "utf8"));
-    assert.deepEqual(result.candidates, [], "the newest malformed header consumes the preselected one-file cap");
+    assert.deepEqual(result.candidates, [], "a null header is skipped and consumes the preselected one-file cap");
     assert.equal(result.selectedSessionFiles, 0);
     assert.equal(result.skippedSessionHeaders, 1);
     const oneFileReads = (await readFile(instrumentation.openLog, "utf8")).trim().split("\n");

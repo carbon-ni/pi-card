@@ -93,7 +93,13 @@ async function readHeader(file) {
     for (let position = 0; position < 16_384; position++) {
       const { bytesRead } = await handle.read(byte, 0, 1, position);
       if (bytesRead === 0) throw new Error("Incomplete session header");
-      if (byte[0] === 0x0a) return JSON.parse(Buffer.from(header).toString("utf8"));
+      if (byte[0] === 0x0a) {
+        const parsed = JSON.parse(Buffer.from(header).toString("utf8"));
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Session header must be a JSON object");
+        }
+        return parsed;
+      }
       header.push(byte[0]);
     }
     throw new Error("Header exceeds 16 KB");
