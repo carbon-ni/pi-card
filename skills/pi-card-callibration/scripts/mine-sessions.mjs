@@ -44,7 +44,8 @@ function parseArgs(args) {
 }
 
 function projectSessionDirectory(project) {
-  return `--${project.replaceAll("/", "-")}--`;
+  const withoutLeadingSlash = project.startsWith("/") ? project.slice(1) : project;
+  return `--${withoutLeadingSlash.replaceAll("/", "-")}--`;
 }
 
 function sessionDateFromFilename(filename) {
@@ -87,12 +88,15 @@ async function withNoFollow(file, callback) {
 
 async function readHeader(file) {
   return withNoFollow(file, async (handle) => {
-    const buffer = Buffer.alloc(16_384);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    const text = buffer.subarray(0, bytesRead).toString("utf8");
-    const newline = text.indexOf("\n");
-    if (newline < 0) throw new Error("Header exceeds 16 KB");
-    return JSON.parse(text.slice(0, newline));
+    const byte = Buffer.alloc(1);
+    const header = [];
+    for (let position = 0; position < 16_384; position++) {
+      const { bytesRead } = await handle.read(byte, 0, 1, position);
+      if (bytesRead === 0) throw new Error("Incomplete session header");
+      if (byte[0] === 0x0a) return JSON.parse(Buffer.from(header).toString("utf8"));
+      header.push(byte[0]);
+    }
+    throw new Error("Header exceeds 16 KB");
   });
 }
 
@@ -317,17 +321,26 @@ async function mine({ files, html, limit, output, project, since, until }) {
   const latest = Date.parse(`${until}T23:59:59.999Z`);
   const filenameCandidates = await collectProjectFiles(canonicalRoot, uniqueProjectPaths, since, until, files);
   const eligible = [];
+  let skippedSessionHeaders = 0;
   for (const file of filenameCandidates) {
     let header;
     try { header = await readHeader(file); }
-    catch { throw new Error(`Malformed or unreadable session header (${path.basename(file)}); no output written`); }
+    catch {
+      skippedSessionHeaders++;
+      continue;
+    }
     const timestamp = Date.parse(header.timestamp);
     let headerProject;
     try { headerProject = await realpath(header.cwd); }
-    catch { continue; }
+    catch {
+      skippedSessionHeaders++;
+      continue;
+    }
     if (header.type === "session" && headerProject === projectPath &&
         Number.isFinite(timestamp) && timestamp >= earliest && timestamp <= latest) {
       eligible.push({ file, timestamp });
+    } else {
+      skippedSessionHeaders++;
     }
   }
   eligible.sort((a, b) => b.timestamp - a.timestamp || a.file.localeCompare(b.file));
@@ -376,7 +389,7 @@ async function mine({ files, html, limit, output, project, since, until }) {
     }
     if (results.length >= limit) break;
   }
-  const result = { source: "local-pi-sessions", project: "[REDACTED_PATH]", dateRange: { since, until, timeZone: "UTC" }, selectedSessionFiles: selected.length, candidates: results };
+  const result = { source: "local-pi-sessions", project: "[REDACTED_PATH]", dateRange: { since, until, timeZone: "UTC" }, selectedSessionFiles: selected.length, skippedSessionHeaders, candidates: results };
   await writeOutputs({
     htmlPath: html ? path.join(canonicalAgentDir, html) : null,
     htmlText: html ? renderReviewer(result) : null,
@@ -389,7 +402,7 @@ async function mine({ files, html, limit, output, project, since, until }) {
 try {
   const options = parseArgs(process.argv.slice(2));
   const result = await mine(options);
-  console.log(`Wrote ${result.candidates.length} redacted candidates from ${result.selectedSessionFiles} session files. Candidate JSON: ${options.output}${options.html ? `; local HTML reviewer: ${options.html}` : ""}.`);
+  console.log(`Wrote ${result.candidates.length} redacted candidates from ${result.selectedSessionFiles} session files${result.skippedSessionHeaders ? `; skipped ${result.skippedSessionHeaders} non-matching or unreadable session headers` : ""}. Candidate JSON: ${options.output}${options.html ? `; local HTML reviewer: ${options.html}` : ""}.`);
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

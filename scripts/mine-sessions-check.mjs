@@ -23,8 +23,13 @@ function message(role, text, timestamp = `${date}T12:00:00.000Z`, stringContent 
 }
 
 function sessionDirectoryName(project) {
-  return `--${project.replaceAll("/", "-")}--`;
+  const withoutLeadingSlash = project.startsWith("/") ? project.slice(1) : project;
+  return `--${withoutLeadingSlash.replaceAll("/", "-")}--`;
 }
+
+test("matches Pi's session directory encoding", () => {
+  assert.equal(sessionDirectoryName("/Users/alice/work"), "--Users-alice-work--");
+});
 
 function sessionFilename(timestamp, id = "fixture") {
   return `${new Date(timestamp).toISOString().replaceAll(":", "-").replace(".", "-")}_${id}.jsonl`;
@@ -48,6 +53,35 @@ async function writeSession(directory, filename, { cwd, timestamp = `${date}T12:
   const content = [JSON.stringify({ type: "session", cwd, timestamp }), ...rows].join("\n") + "\n";
   await writeFile(path.join(directory, file), content);
   return path.join(directory, file);
+}
+
+async function sessionReadInstrumentation(root) {
+  const hook = path.join(root, "count-session-reads.mjs");
+  const openLog = path.join(root, "opened-sessions.log");
+  const headerReadLog = path.join(root, "header-reads.jsonl");
+  await writeFile(hook, `
+    import fs from "node:fs/promises";
+    import { appendFileSync } from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    const originalOpen = fs.open;
+    fs.open = async function (file, ...args) {
+      const name = String(file);
+      const handle = await originalOpen.call(this, file, ...args);
+      if (!name.endsWith(".jsonl")) return handle;
+      appendFileSync(process.env.PI_CARD_SESSION_OPEN_LOG, name + "\\n");
+      const originalRead = handle.read.bind(handle);
+      handle.read = async (...readArgs) => {
+        const result = await originalRead(...readArgs);
+        appendFileSync(process.env.PI_CARD_HEADER_READ_LOG, JSON.stringify({
+          name, position: readArgs[3], requested: readArgs[2], bytesRead: result.bytesRead,
+        }) + "\\n");
+        return result;
+      };
+      return handle;
+    };
+    syncBuiltinESMExports();
+  `);
+  return { hook, openLog, headerReadLog };
 }
 
 function runMiner({ agentDir, project, output, env = {}, root: _fixtureRoot, sessions: _fixtureSessions, sessionsRoot: _fixtureSessionsRoot, ...args }) {
@@ -330,35 +364,95 @@ test("limits session reads to five files in the current project's directory", as
       });
     }
 
-    const hook = path.join(f.root, "count-session-opens.mjs");
-    const openLog = path.join(f.root, "opened-sessions.log");
-    await writeFile(hook, `
-      import fs from "node:fs/promises";
-      import { appendFileSync } from "node:fs";
-      import { syncBuiltinESMExports } from "node:module";
-      const originalOpen = fs.open;
-      fs.open = async function (file, ...args) {
-        const name = String(file);
-        if (name.endsWith(".jsonl")) appendFileSync(process.env.PI_CARD_SESSION_OPEN_LOG, name + "\\n");
-        return originalOpen.call(this, file, ...args);
-      };
-      syncBuiltinESMExports();
-    `);
-
+    const instrumentation = await sessionReadInstrumentation(f.root);
     await runMiner({
       ...f,
       consent: "yes",
-      env: { NODE_OPTIONS: `--import ${hook}`, PI_CARD_SESSION_OPEN_LOG: openLog },
+      env: {
+        NODE_OPTIONS: `--import ${instrumentation.hook}`,
+        PI_CARD_SESSION_OPEN_LOG: instrumentation.openLog,
+        PI_CARD_HEADER_READ_LOG: instrumentation.headerReadLog,
+      },
     });
-    const opened = (await readFile(openLog, "utf8")).trim().split("\n");
+    const opened = (await readFile(instrumentation.openLog, "utf8")).trim().split("\n");
     const openedPaths = new Set(opened);
     assert.equal(openedPaths.size, 5, "only five selected session files are opened");
     assert.equal(opened.length, 10, "each selected file is opened once for its header and once for its transcript");
     const canonicalSessions = await realpath(f.sessions);
     assert.ok([...openedPaths].every((file) => file.startsWith(canonicalSessions + path.sep)));
+    const headerReads = (await readFile(instrumentation.headerReadLog, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.ok(headerReads.every(({ requested, bytesRead }) => requested === 1 && bytesRead === 1), "header reads never overread beyond a byte");
+    for (const file of openedPaths) {
+      const content = await readFile(file, "utf8");
+      const expectedHeaderBytes = Buffer.byteLength(content.slice(0, content.indexOf("\n") + 1));
+      assert.equal(headerReads.filter((read) => read.name === file).length, expectedHeaderBytes);
+    }
     const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
     assert.equal(result.selectedSessionFiles, 5);
     assert.deepEqual(result.candidates.map(({ text }) => text), ["target 7", "target 6", "target 5", "target 4", "target 3"]);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("validates lossy Pi project-directory collisions before reading transcripts", async () => {
+  const f = await fixture("pi-card-session-dir-collision-");
+  const requestedProject = path.join(f.root, "a-b", "c");
+  const collidingProject = path.join(f.root, "a", "b-c");
+  try {
+    await mkdir(requestedProject, { recursive: true });
+    await mkdir(collidingProject, { recursive: true });
+    assert.equal(sessionDirectoryName(requestedProject), sessionDirectoryName(collidingProject));
+    const sharedDirectory = path.join(f.sessionsRoot, sessionDirectoryName(requestedProject));
+    await mkdir(sharedDirectory);
+    const foreignFile = sessionFilename(`${date}T14:00:00.000Z`, "foreign");
+    await writeFile(path.join(sharedDirectory, foreignFile), [
+      JSON.stringify({ type: "session", cwd: collidingProject, timestamp: `${date}T14:00:00.000Z` }),
+      "{malformed transcript must not be opened}",
+    ].join("\n") + "\n");
+    await writeSession(sharedDirectory, sessionFilename(`${date}T13:00:00.000Z`, "requested"), {
+      cwd: requestedProject,
+      timestamp: `${date}T13:00:00.000Z`,
+      rows: [message("user", "requested project only")],
+    });
+
+    const instrumentation = await sessionReadInstrumentation(f.root);
+    const instrumentedEnv = {
+      NODE_OPTIONS: `--import ${instrumentation.hook}`,
+      PI_CARD_SESSION_OPEN_LOG: instrumentation.openLog,
+      PI_CARD_HEADER_READ_LOG: instrumentation.headerReadLog,
+    };
+    await runMiner({ ...f, project: requestedProject, consent: "yes", env: instrumentedEnv });
+    let result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.deepEqual(result.candidates.map(({ text }) => text), ["requested project only"]);
+    assert.equal(result.skippedSessionHeaders, 1);
+    const canonicalSharedDirectory = await realpath(sharedDirectory);
+    const canonicalForeignFile = path.join(canonicalSharedDirectory, foreignFile);
+    const firstOpenLog = (await readFile(instrumentation.openLog, "utf8")).trim().split("\n");
+    assert.equal(firstOpenLog.filter((file) => file === canonicalForeignFile).length, 1, "foreign transcript is never opened");
+    const foreignHeader = (await readFile(path.join(sharedDirectory, foreignFile), "utf8")).split("\n", 1)[0] + "\n";
+    const foreignReads = (await readFile(instrumentation.headerReadLog, "utf8")).trim().split("\n").map(JSON.parse)
+      .filter((read) => read.name === canonicalForeignFile);
+    assert.equal(foreignReads.length, Buffer.byteLength(foreignHeader), "only the foreign session's first line is read");
+    assert.ok(foreignReads.every(({ requested, bytesRead }) => requested === 1 && bytesRead === 1));
+
+    await rm(await outputFile(f));
+    await writeFile(instrumentation.openLog, "");
+    await writeFile(instrumentation.headerReadLog, "");
+    await writeFile(path.join(sharedDirectory, foreignFile), "not a valid session header\n");
+    await runMiner({ ...f, project: requestedProject, consent: "yes", env: instrumentedEnv });
+    result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.deepEqual(result.candidates.map(({ text }) => text), ["requested project only"]);
+    assert.equal(result.skippedSessionHeaders, 1);
+
+    await rm(await outputFile(f));
+    await writeFile(instrumentation.openLog, "");
+    await writeFile(instrumentation.headerReadLog, "");
+    await runMiner({ ...f, project: requestedProject, consent: "yes", files: 1, env: instrumentedEnv });
+    result = JSON.parse(await readFile(await outputFile(f), "utf8"));
+    assert.deepEqual(result.candidates, [], "the newest malformed header consumes the preselected one-file cap");
+    assert.equal(result.selectedSessionFiles, 0);
+    assert.equal(result.skippedSessionHeaders, 1);
+    const oneFileReads = (await readFile(instrumentation.openLog, "utf8")).trim().split("\n");
+    assert.deepEqual(oneFileReads, [canonicalForeignFile], "the older requested-project transcript stays unopened");
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
