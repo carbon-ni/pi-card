@@ -33,6 +33,8 @@ To move a Git installation to another release tag, reinstall it with the new tag
 pi install git:github.com/carbon-ni/pi-card@vX.Y.Z
 ```
 
+The `/skill:pi-card-callibration` session-calibration skill is a later package addition and is not included in the `v0.1.0` release. Install a future release that includes it before invoking the skill.
+
 ## Try it
 
 From this checkout:

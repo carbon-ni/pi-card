@@ -17,13 +17,13 @@ function parseArgs(args) {
   const options = { files: MAX_FILES, limit: MAX_CANDIDATES };
   for (let i = 0; i < args.length; i++) {
     const key = args[i];
-    if (!["--sessions", "--output", "--project", "--since", "--until", "--files", "--limit", "--consent"].includes(key)) {
+    if (!["--output", "--project", "--since", "--until", "--files", "--limit", "--consent"].includes(key)) {
       throw new Error(`Unknown option: ${key}`);
     }
     const value = args[++i];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${key}`);
     const name = key.slice(2);
-    options[name] = ["sessions", "output", "project", "since", "until", "consent"].includes(name) ? value : Number(value);
+    options[name] = ["output", "project", "since", "until", "consent"].includes(name) ? value : Number(value);
     if (name === "consent" && value !== "yes") throw new Error("Explicit consent is required before reading session JSONL");
     if ((name === "files" && (!Number.isInteger(options.files) || options.files < 1 || options.files > MAX_FILES)) ||
         (name === "limit" && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > MAX_CANDIDATES))) {
@@ -32,16 +32,21 @@ function parseArgs(args) {
   }
   if (options.consent !== "yes") throw new Error("Explicit consent is required before reading session JSONL");
   const validDate = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
-  if (!options.sessions || !options.output || !options.project || !path.isAbsolute(options.project) || !validDate(options.since) || !validDate(options.until)) {
-    throw new Error("Usage: mine-sessions.mjs --consent yes --sessions <dir> --project <absolute-cwd> --since YYYY-MM-DD --until YYYY-MM-DD --output <file> [--files 1-5] [--limit 1-20]");
+  if (!options.output || path.basename(options.output) !== options.output || [".", ".."].includes(options.output) || !options.project || !path.isAbsolute(options.project) || !validDate(options.since) || !validDate(options.until)) {
+    throw new Error("Usage: mine-sessions.mjs --consent yes --project <absolute-cwd> --since YYYY-MM-DD --until YYYY-MM-DD --output <filename> [--files 1-5] [--limit 1-20]");
   }
   if (options.since > options.until) throw new Error("--since must be on or before --until");
   return options;
 }
 
-async function collectFiles(directory, depth = 0, found = []) {
+async function collectFiles(directory, root, depth = 0, found = []) {
   if (depth > MAX_DEPTH) return found;
-  const entries = await readdir(directory, { withFileTypes: true });
+  const directoryStat = await lstat(directory);
+  if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) return found;
+  const canonicalDirectory = await realpath(directory);
+  const relativeDirectory = path.relative(root, canonicalDirectory);
+  if (relativeDirectory.startsWith("..") || path.isAbsolute(relativeDirectory)) return found;
+  const entries = await readdir(canonicalDirectory, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue;
     const fullPath = path.join(directory, entry.name);
@@ -50,7 +55,7 @@ async function collectFiles(directory, depth = 0, found = []) {
       found.push(fullPath);
       if (found.length > MAX_DISCOVERED_FILES) throw new Error("Too many session files; narrow the selected sessions root");
     } else if (entry.isDirectory() && depth < MAX_DEPTH) {
-      await collectFiles(fullPath, depth + 1, found);
+      await collectFiles(fullPath, root, depth + 1, found);
     }
   }
   return found;
@@ -100,24 +105,38 @@ function redact(text) {
     .replaceAll(os.homedir(), "[HOME]");
 }
 
-async function mine({ sessions, files, limit, output, project, since, until }) {
-  const root = path.resolve(sessions);
-  const rootStat = await lstat(root);
-  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("Sessions root must be a real directory, not a symlink");
-  const canonicalRoot = await realpath(root);
-  const projectPath = path.resolve(project);
+async function mine({ files, limit, output, project, since, until }) {
+  const agentDir = path.resolve(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent"));
+  const agentStat = await lstat(agentDir);
+  if (agentStat.isSymbolicLink() || !agentStat.isDirectory()) throw new Error("Pi agent config directory must be a real directory, not a symlink");
+  const canonicalAgentDir = await realpath(agentDir);
+  const sessions = path.join(canonicalAgentDir, "sessions");
+  const sessionsStat = await lstat(sessions);
+  if (sessionsStat.isSymbolicLink() || !sessionsStat.isDirectory()) throw new Error("Pi sessions directory must be a real directory, not a symlink");
+  const canonicalRoot = await realpath(sessions);
+  if (canonicalRoot !== sessions) throw new Error("Pi sessions directory resolves outside the configured agent directory");
+  const outputPath = path.join(canonicalAgentDir, output);
+  const projectPath = await realpath(project);
   const earliest = Date.parse(`${since}T00:00:00Z`);
   const latest = Date.parse(`${until}T23:59:59.999Z`);
-  const allFiles = await collectFiles(canonicalRoot);
+  const allFiles = await collectFiles(canonicalRoot, canonicalRoot);
   const eligible = [];
   for (const file of allFiles) {
+    let canonicalFile;
+    try { canonicalFile = await realpath(file); }
+    catch { continue; }
+    const relativeFile = path.relative(canonicalRoot, canonicalFile);
+    if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile)) continue;
     const fileStat = await lstat(file);
     if (fileStat.isSymbolicLink() || !fileStat.isFile()) continue;
     let header;
     try { header = await readHeader(file); }
     catch { throw new Error(`Malformed or unreadable session header (${path.basename(file)}); no output written`); }
     const timestamp = Date.parse(header.timestamp);
-    if (header.type === "session" && path.resolve(header.cwd ?? "") === projectPath && timestamp >= earliest && timestamp <= latest) {
+    let headerProject;
+    try { headerProject = await realpath(header.cwd); }
+    catch { continue; }
+    if (header.type === "session" && headerProject === projectPath && timestamp >= earliest && timestamp <= latest) {
       eligible.push({ file, timestamp });
     }
   }
@@ -154,7 +173,7 @@ async function mine({ sessions, files, limit, output, project, since, until }) {
     if (results.length >= limit) break;
   }
   const result = { source: "local-pi-sessions", project: projectPath, dateRange: { since, until }, selectedSessionFiles: selected.length, candidates: results };
-  await writeFile(path.resolve(output), `${JSON.stringify(result, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   return result;
 }
 
