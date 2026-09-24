@@ -119,24 +119,92 @@ function timestampInRange(value, earliest, latest) {
 }
 
 function textOf(content) {
-  if (typeof content === "string") return content.trim();
-  if (!Array.isArray(content)) return "";
-  return content.filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text).join(" ").trim();
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content) || content.some((part) =>
+    !part || typeof part !== "object" || part.type !== "text" || typeof part.text !== "string",
+  )) return "";
+  return content.map((part) => part.text).join("");
 }
 
-function findAncestorContext(parentId, entriesById) {
+const EVIDENCE_TYPE = "pi-card.intervention";
+const EVIDENCE_DATA_KEYS = [
+  "activeAtInput", "deliveryAtPersistence", "inputKind", "inputLeafEntryId",
+  "observedAction", "schemaVersion", "source", "streamingBehavior", "taskAnchorEntryId",
+];
+
+function isEvidenceMarker(entry) {
+  const data = entry.data;
+  if (entry.type !== "custom" || entry.customType !== EVIDENCE_TYPE || !data || typeof data !== "object" || Array.isArray(data)) return false;
+  if (JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(EVIDENCE_DATA_KEYS)) return false;
+  return data.schemaVersion === 3 && data.source === "interactive" && typeof data.activeAtInput === "boolean" &&
+    (data.activeAtInput ? typeof data.taskAnchorEntryId === "string" && data.taskAnchorEntryId.length > 0 : data.taskAnchorEntryId === null) &&
+    (data.activeAtInput
+      ? typeof data.inputLeafEntryId === "string" && data.inputLeafEntryId.length > 0
+      : data.inputLeafEntryId === null || typeof data.inputLeafEntryId === "string" && data.inputLeafEntryId.length > 0) &&
+    ["jevRouted", "interruptCard", "followUpCard", "brainstormCard"].includes(data.inputKind) &&
+    ["send", "continue", "queued_followUp", "abort_requested", "transform"].includes(data.observedAction) &&
+    ["normal", "steer", "followUp"].includes(data.deliveryAtPersistence) &&
+    (data.streamingBehavior === null || data.streamingBehavior === "steer" || data.streamingBehavior === "followUp");
+}
+
+function ancestorChain(parentId, entriesById, ambiguousIds) {
+  if (typeof parentId !== "string") return null;
+  const chain = [];
   const visited = new Set();
   let currentId = parentId;
-  for (let depth = 0; typeof currentId === "string" && depth < 1_000; depth++) {
-    if (visited.has(currentId)) return "";
+  for (let depth = 0; depth < 1_000; depth++) {
+    if (visited.has(currentId) || ambiguousIds.has(currentId)) return null;
     visited.add(currentId);
-    const ancestor = entriesById.get(currentId);
-    if (!ancestor) return "";
-    if (ancestor.message?.text) return ancestor.message.text;
-    currentId = ancestor.parentId;
+    const entry = entriesById.get(currentId);
+    if (!entry || !entry.parentValid) return null;
+    chain.push(entry);
+    if (entry.parentId === null) return chain;
+    if (typeof entry.parentId !== "string") return null;
+    currentId = entry.parentId;
   }
-  return "";
+  return null;
+}
+
+function idleParentChainMatches(target, inputLeafEntryId, entriesById, ambiguousIds) {
+  let parentId = target.parentId;
+  if (inputLeafEntryId === null && parentId === null) return target.parentWasNull;
+
+  const visited = new Set();
+  while (parentId !== inputLeafEntryId) {
+    if (typeof parentId !== "string" || visited.has(parentId) || ambiguousIds.has(parentId)) return false;
+    visited.add(parentId);
+    const parent = entriesById.get(parentId);
+    if (!parent || !parent.parentValid || parent.type !== "custom" || parent.customType !== "pi-card.routing") return false;
+    parentId = parent.parentId;
+    if (parentId === null) return inputLeafEntryId === null && parent.parentWasNull;
+    if (typeof parentId !== "string") return false;
+  }
+  return inputLeafEntryId !== null && entriesById.has(inputLeafEntryId) && !ambiguousIds.has(inputLeafEntryId);
+}
+
+function resolveTaskAnchor(target, marker, entriesById, ambiguousIds, earliest, latest) {
+  if (!isEvidenceMarker(marker) || ambiguousIds.has(marker.id) || ambiguousIds.has(target.id)) return null;
+  if (marker.parentId !== target.id || target.type !== "message" || target.message?.role !== "user" || !target.parentValid) return null;
+  if (!timestampInRange(marker.timestamp, earliest, latest) || !timestampInRange(target.timestamp, earliest, latest) || !target.message.text) return null;
+
+  if (!marker.data.activeAtInput) {
+    if (!idleParentChainMatches(target, marker.data.inputLeafEntryId, entriesById, ambiguousIds)) return null;
+    return { taskAnchor: null };
+  }
+
+  const chain = ancestorChain(target.parentId, entriesById, ambiguousIds);
+  if (!chain) return null;
+  const inputIndex = chain.findIndex((entry) => entry.id === marker.data.inputLeafEntryId);
+  const anchorIndex = chain.findIndex((entry) => entry.id === marker.data.taskAnchorEntryId);
+  if (inputIndex < 0 || anchorIndex < inputIndex) return null;
+
+  const taskAnchor = chain[anchorIndex];
+  if (taskAnchor.type !== "message" || taskAnchor.message?.role !== "user" || !taskAnchor.message.text ||
+      !timestampInRange(taskAnchor.timestamp, earliest, latest)) return null;
+
+  const entriesBetween = [...chain.slice(0, inputIndex), ...chain.slice(inputIndex + 1, anchorIndex)];
+  if (entriesBetween.some((entry) => entry.type === "message" && entry.message?.role === "user")) return null;
+  return { taskAnchor };
 }
 
 function redact(text) {
@@ -167,15 +235,18 @@ const REVIEWER_SCRIPT = `(() => {
     const heading = document.createElement("h2");
     heading.textContent = "Example " + (index + 1);
     card.append(heading);
+    const behavior = document.createElement("p");
+    behavior.textContent = "Observed Pi behavior (not a label): " + review.candidate.activeStatus + " · " + review.candidate.inputKind + " · action " + review.candidate.observedAction + " · persisted delivery " + review.candidate.deliveryAtPersistence;
+    card.append(behavior);
     const messageLabel = document.createElement("label");
-    messageLabel.textContent = "User message";
+    messageLabel.textContent = "Persisted Pi Card user message (may differ from what you typed)";
     const message = document.createElement("textarea");
     message.value = review.text;
     message.rows = 4;
     messageLabel.append(message);
     card.append(messageLabel);
     const contextLabel = document.createElement("label");
-    contextLabel.textContent = "Prior context (linked ancestor)";
+    contextLabel.textContent = "Task context (active input only; captured anchor)";
     const context = document.createElement("textarea");
     context.value = review.context;
     context.rows = 2;
@@ -226,6 +297,9 @@ const REVIEWER_SCRIPT = `(() => {
       dateRange: source.dateRange,
       candidates: reviews.filter((review) => review.label).map((review) => ({
         id: review.candidate.id, text: review.text, context: review.context,
+        inputKind: review.candidate.inputKind,
+        observedAction: review.candidate.observedAction,
+        deliveryAtPersistence: review.candidate.deliveryAtPersistence,
         activeStatus: review.candidate.activeStatus, label: review.label,
         stopConfirmed: review.label === "stop" && review.stopConfirmed,
       })),
@@ -353,20 +427,38 @@ async function mine({ files, html, limit, output, project, since, until }) {
   eligible.sort((a, b) => b.timestamp - a.timestamp || a.file.localeCompare(b.file));
   const selected = eligible;
   const results = [];
+  let skippedEvidenceMarkers = 0;
+  let omittedEvidenceMarkers = 0;
   for (const { file } of selected) {
     let contents;
     try { contents = await readSession(file); }
     catch { throw new Error(`Oversized or unreadable selected session (${path.basename(file)}); no output written`); }
     const lines = contents.split("\n");
-    const messages = [];
     const entriesById = new Map();
     const ambiguousIds = new Set();
+    const markerCountsByTarget = new Map();
+    const markerRows = [];
     for (let index = 1; index < lines.length; index++) {
       if (!lines[index].trim()) continue;
       let row;
       try { row = JSON.parse(lines[index]); }
       catch { throw new Error(`Malformed selected session JSONL (${path.basename(file)}:${index + 1}); no output written`); }
-      const entry = { parentId: typeof row.parentId === "string" ? row.parentId : null, message: null };
+      if (row.type === "custom" && row.customType === EVIDENCE_TYPE && typeof row.parentId === "string") {
+        markerCountsByTarget.set(row.parentId, (markerCountsByTarget.get(row.parentId) ?? 0) + 1);
+      }
+      const entry = {
+        id: row.id,
+        type: row.type,
+        customType: row.customType,
+        data: row.data,
+        rowNumber: index + 1,
+        parentId: typeof row.parentId === "string" ? row.parentId : null,
+        parentValid: row.parentId === undefined || row.parentId === null || typeof row.parentId === "string",
+        parentWasNull: row.parentId === null,
+        timestamp: row.timestamp,
+        message: null,
+      };
+      if (row.type === "custom" && row.customType === EVIDENCE_TYPE) markerRows.push(entry);
       if (typeof row.id === "string" && !ambiguousIds.has(row.id)) {
         if (entriesById.has(row.id)) {
           entriesById.delete(row.id);
@@ -376,27 +468,52 @@ async function mine({ files, html, limit, output, project, since, until }) {
         }
       }
       if (row.type !== "message" || !["user", "assistant"].includes(row.message?.role)) continue;
-      if (!timestampInRange(row.timestamp, earliest, latest)) continue;
       const text = textOf(row.message.content);
-      if (!text) continue;
-      entry.message = { role: row.message.role, text };
-      messages.push({ ...entry.message, parentId: entry.parentId, rowId: row.id, id: `${path.basename(file)}:${index + 1}` });
+      if (text) entry.message = { role: row.message.role, text };
     }
-    for (let i = messages.length - 1; i >= 0 && results.length < limit; i--) {
-      const message = messages[i];
-      if (message.role !== "user") continue;
-      const context = findAncestorContext(message.parentId, entriesById);
+    for (let i = markerRows.length - 1; i >= 0; i--) {
+      const marker = markerRows[i];
+      if (!isEvidenceMarker(marker) || typeof marker.id !== "string" || ambiguousIds.has(marker.id) ||
+          typeof marker.parentId !== "string" || markerCountsByTarget.get(marker.parentId) !== 1) {
+        skippedEvidenceMarkers++;
+        continue;
+      }
+      const target = entriesById.get(marker.parentId);
+      if (!target || ambiguousIds.has(target.id)) {
+        skippedEvidenceMarkers++;
+        continue;
+      }
+      const evidence = resolveTaskAnchor(target, marker, entriesById, ambiguousIds, earliest, latest);
+      if (!evidence || target.message.text.length > MAX_MESSAGE_CHARS) {
+        skippedEvidenceMarkers++;
+        continue;
+      }
+      if (results.length >= limit) {
+        omittedEvidenceMarkers++;
+        continue;
+      }
       results.push({
-        id: message.id,
-        text: redact(message.text).slice(0, MAX_MESSAGE_CHARS).trim(),
-        context: context ? redact(context).slice(-MAX_CONTEXT_CHARS).trim() : "",
-        activeStatus: "unknown",
+        id: `candidate-${results.length + 1}`,
+        text: redact(target.message.text),
+        context: evidence.taskAnchor ? redact(evidence.taskAnchor.message.text).slice(-MAX_CONTEXT_CHARS).trim() : "",
+        inputKind: marker.data.inputKind,
+        observedAction: marker.data.observedAction,
+        deliveryAtPersistence: marker.data.deliveryAtPersistence,
+        activeStatus: marker.data.activeAtInput ? "active" : "idle",
         label: null,
       });
     }
-    if (results.length >= limit) break;
   }
-  const result = { source: "local-pi-sessions", project: "[REDACTED_PATH]", dateRange: { since, until, timeZone: "UTC" }, selectedSessionFiles: selected.length, skippedSessionHeaders, candidates: results };
+  const result = {
+    source: "local-pi-sessions",
+    project: "[REDACTED_PATH]",
+    dateRange: { since, until, timeZone: "UTC" },
+    selectedSessionFiles: selected.length,
+    skippedSessionHeaders,
+    skippedEvidenceMarkers,
+    omittedEvidenceMarkers,
+    candidates: results,
+  };
   await writeOutputs({
     htmlPath: html ? path.join(canonicalAgentDir, html) : null,
     htmlText: html ? renderReviewer(result) : null,
@@ -409,7 +526,7 @@ async function mine({ files, html, limit, output, project, since, until }) {
 try {
   const options = parseArgs(process.argv.slice(2));
   const result = await mine(options);
-  console.log(`Wrote ${result.candidates.length} redacted candidates from ${result.selectedSessionFiles} session files${result.skippedSessionHeaders ? `; skipped ${result.skippedSessionHeaders} non-matching or unreadable session headers` : ""}. Candidate JSON: ${options.output}${options.html ? `; local HTML reviewer: ${options.html}` : ""}.`);
+  console.log(`Wrote ${result.candidates.length} redacted candidates from ${result.selectedSessionFiles} session files${result.skippedSessionHeaders ? `; skipped ${result.skippedSessionHeaders} non-matching or unreadable session headers` : ""}${result.skippedEvidenceMarkers ? `; skipped ${result.skippedEvidenceMarkers} invalid or ambiguous evidence markers` : ""}${result.omittedEvidenceMarkers ? `; omitted ${result.omittedEvidenceMarkers} additional valid candidates after reaching the limit` : ""}. Candidate JSON: ${options.output}${options.html ? `; local HTML reviewer: ${options.html}` : ""}.`);
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

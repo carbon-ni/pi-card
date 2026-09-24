@@ -68,8 +68,9 @@ Cards work without an API key. The three message cards run immediately while Pi 
 
 ## More
 
-- [Configuration](docs/configuration.md): API key, personal examples, privacy, and diagnostics.
-- `/skill:pi-card-callibration`: opt-in, locally redacted calibration from user-approved past sessions.
+- [Configuration](docs/configuration.md): API key, personal examples, privacy, diagnostics, and optional prospective intervention markers.
+- `/pi-card-capture on|off`: TUI-only, default-off capture of future idle/active Jev-routed text and `**`/`&&`/`??` cards. Markers contain behavior metadata and branch IDs, not text or Jev results; candidate text comes from the persisted Pi Card message after best-effort redaction and may differ from keystrokes. Enabling requires confirmation; mining needs separate consent.
+- `/skill:pi-card-callibration`: separately opt-in, locally redacted calibration from prospective marker-linked inputs only; unmarked history is never mined.
 - [Development](docs/development.md): local checks, routing eval, and extension API.
 
 Without `TYPESAFE_API_KEY`, plain text keeps Pi's native behavior. With the key, eligible messages and configured examples go to an external service for classification. Check [the privacy details](docs/configuration.md#let-jev-choose) before enabling it.

@@ -3,6 +3,7 @@ import registerCard, { parseTrigger } from "./index.js";
 import { classifyMessage, classifyMessageDetailed } from "./router.js";
 import { debounceDelayFromEnv } from "./debounce.js";
 import { loadRoutingExamples, routingExamplesPath } from "./routing-examples.js";
+import { INTERVENTION_EVIDENCE_TYPE } from "./intervention-evidence.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -813,6 +814,533 @@ describe("~~ flip", () => {
   });
 });
 
+describe("prospective intervention capture", () => {
+  beforeEach(() => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+  });
+
+  it("requires an explicit session-scoped opt-in after session startup", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+
+    await harness.command("pi-card-capture", "on");
+    expect(harness.ctx.ui.notify).toHaveBeenCalledWith("Pi Card capture is available after the session starts", "warning");
+    await harness.startSession();
+    harness.setIdle(true);
+    await harness.command("pi-card-capture", "on");
+    expect(harness.ctx.ui.notify).toHaveBeenLastCalledWith(
+      "Pi Card capture is on for this session; persisted-message metadata only",
+      "info",
+    );
+    harness.setIdle(false);
+    harness.addBranchEntry({ id: "active-leaf", type: "message", parentId: "task", message: { role: "assistant" } });
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "private intervention text", source: "interactive", streamingBehavior: "followUp" }, harness.ctx);
+    await completeCapturedTurn(harness, "captured-user");
+
+    const marker = markerFor(harness);
+    expect(marker).toBeDefined();
+    expect(marker.parentId).toBe("captured-user");
+    expect(marker.data).toEqual({
+      schemaVersion: 3,
+      source: "interactive",
+      activeAtInput: true,
+      streamingBehavior: "followUp",
+      taskAnchorEntryId: "task",
+      inputLeafEntryId: "active-leaf",
+      inputKind: "jevRouted",
+      observedAction: "send",
+      deliveryAtPersistence: "steer",
+    });
+    expect(JSON.stringify(marker.data)).not.toContain("private intervention text");
+    expect(JSON.stringify(marker.data)).not.toMatch(/hash|fingerprint|text/i);
+  });
+
+  it("rejects opt-in commands outside the interactive TUI", async () => {
+    const harness = createHarness(true);
+    await harness.startSession();
+    harness.ctx.mode = "rpc";
+    await harness.command("pi-card-capture", "on");
+    expect(harness.ctx.ui.notify).toHaveBeenCalledWith(
+      "Pi Card capture can only be controlled from the interactive TUI",
+      "warning",
+    );
+    harness.ctx.mode = "tui";
+    harness.ctx.isIdle.mockReturnValue(false);
+    await harness.command("pi-card-capture", "on");
+    expect(harness.ctx.ui.notify).toHaveBeenLastCalledWith("Enable Pi Card capture only while the agent is idle", "warning");
+  });
+
+  it("requires human confirmation even when an extension invokes the capture command", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await harness.startSession();
+    harness.setIdle(true);
+    harness.ctx.ui.confirm.mockResolvedValueOnce(false);
+    await harness.command("pi-card-capture", "on");
+    expect(harness.ctx.ui.confirm).toHaveBeenCalledOnce();
+    expect(harness.ctx.ui.confirm).toHaveBeenCalledWith(
+      "Enable prospective Pi Card capture?",
+      expect.stringContaining("while Pi is idle or active"),
+    );
+    expect(harness.ctx.ui.notify).toHaveBeenLastCalledWith("Pi Card capture remains off; confirmation is required", "info");
+
+    harness.setIdle(false);
+    harness.addBranchEntry({ id: "active-leaf", type: "message", parentId: "task", message: { role: "assistant" } });
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "private intervention text", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "unconfirmed-user");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("keeps capture off by default", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await harness.startSession();
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "private intervention text", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "uncaptured-user");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("captures idle Jev-routed text with no active task anchor", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(true);
+    await enableCaptureAtIdle(harness);
+    await harness.input({ text: "idle routed message", source: "interactive" }, harness.ctx);
+    await persistIdleMessage(harness, "idle-routed-user", "idle routed message", "task");
+
+    expect(markerFor(harness).data).toEqual({
+      schemaVersion: 3,
+      source: "interactive",
+      activeAtInput: false,
+      streamingBehavior: null,
+      taskAnchorEntryId: null,
+      inputLeafEntryId: "task",
+      inputKind: "jevRouted",
+      observedAction: "send",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it("captures the final persisted text after an idle prefix transform from an empty session", async () => {
+    const harness = createHarness(true);
+    await enableCaptureAtIdle(harness, true);
+    const result = await harness.input({ text: "?? simplify this", source: "interactive" }, harness.ctx);
+    const persistedText = "Let's brainstorm simplify this before taking further action.";
+    expect(result).toEqual({ action: "transform", text: persistedText });
+    await persistIdleMessage(harness, "first-idle-user", "host-normalized brainstorm text", null);
+
+    expect(markerFor(harness).data).toEqual({
+      schemaVersion: 3,
+      source: "interactive",
+      activeAtInput: false,
+      streamingBehavior: null,
+      taskAnchorEntryId: null,
+      inputLeafEntryId: null,
+      inputKind: "brainstormCard",
+      observedAction: "transform",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it.each([
+    ["** stop this", "stop this", "interruptCard"],
+    ["&& add a follow-up", "add a follow-up", "followUpCard"],
+  ])("captures idle prefix %s as a transform", async (typed, persistedText, inputKind) => {
+    const harness = createHarness(true);
+    await enableCaptureAtIdle(harness);
+    expect(await harness.input({ text: typed, source: "interactive" }, harness.ctx))
+      .toEqual({ action: "transform", text: persistedText });
+    await persistIdleMessage(harness, "idle-prefix-user", persistedText, "task");
+    expect(markerFor(harness).data).toMatchObject({
+      activeAtInput: false,
+      taskAnchorEntryId: null,
+      inputLeafEntryId: "task",
+      inputKind,
+      observedAction: "transform",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it("captures idle Jev delivery across Pi Card debug entries", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "key");
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(true);
+    await enableCaptureAtIdle(harness);
+    await harness.input({ text: "private idle input", source: "interactive" }, harness.ctx);
+    await persistIdleMessage(harness, "debug-idle-user", "private idle input", harness.getBranch().at(-1).id);
+    expect(markerFor(harness).data).toMatchObject({
+      activeAtInput: false,
+      inputKind: "jevRouted",
+      observedAction: "send",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it("captures idle prefix transforms across Pi Card debug entries", async () => {
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    const harness = createHarness(true);
+    await enableCaptureAtIdle(harness);
+    const result = await harness.input({ text: "?? brainstorm", source: "interactive" }, harness.ctx);
+    expect(result.action).toBe("transform");
+    await persistIdleMessage(harness, "debug-prefix-user", result.text, harness.getBranch().at(-1).id);
+    expect(markerFor(harness).data).toMatchObject({
+      activeAtInput: false,
+      inputKind: "brainstormCard",
+      observedAction: "transform",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it("captures an empty-session transform through debug entries back to the null root", async () => {
+    vi.stubEnv("PI_CARD_DEBUG", "true");
+    const harness = createHarness(true);
+    await enableCaptureAtIdle(harness, true);
+    const result = await harness.input({ text: "?? brainstorm", source: "interactive" }, harness.ctx);
+    expect(result.action).toBe("transform");
+    await persistIdleMessage(harness, "debug-empty-user", result.text, harness.getBranch().at(-1).id);
+    expect(markerFor(harness).data).toMatchObject({
+      activeAtInput: false,
+      taskAnchorEntryId: null,
+      inputLeafEntryId: null,
+      inputKind: "brainstormCard",
+      observedAction: "transform",
+    });
+  });
+
+  it("captures idle native continuation only after Jev returns unclear", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("unclear"));
+    const harness = createHarness(true);
+    await enableCaptureAtIdle(harness);
+    expect(await harness.input({ text: "not clear enough to route", source: "interactive" }, harness.ctx))
+      .toEqual({ action: "continue" });
+    await persistIdleMessage(harness, "unclear-user", "not clear enough to route", "task");
+
+    expect(markerFor(harness).data).toMatchObject({
+      activeAtInput: false,
+      taskAnchorEntryId: null,
+      inputKind: "jevRouted",
+      observedAction: "continue",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it("does not capture after opt-out clears a pending candidate", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "private intervention text", source: "interactive" }, harness.ctx);
+    await harness.command("pi-card-capture", "off");
+    await completeCapturedTurn(harness, "uncaptured-user");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("fails closed when duplicate inputs create concurrent candidates", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "same private input", source: "interactive" }, harness.ctx);
+    await harness.input({ text: "same private input", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "ambiguous-user");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("fails closed when an earlier extension transforms the internal input", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    harness.pi.sendUserMessage.mockImplementationOnce(async (text: string) => {
+      await harness.input({ text: `transformed ${text}`, source: "extension" }, harness.ctx);
+    });
+
+    await harness.input({ text: "private intervention text", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "early-transform-user", "transformed private intervention text");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("fails closed when same-text extension inputs interleave with Pi Card delivery", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    harness.pi.sendUserMessage.mockImplementation(async (text: string) => {
+      await harness.input({ text, source: "extension" }, harness.ctx);
+      await harness.input({ text, source: "extension" }, harness.ctx);
+    });
+
+    await harness.input({ text: "same private input", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "same-text-user");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("fails closed for queue batches instead of linking one row to several inputs", async () => {
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "&& first private item", source: "interactive" }, harness.ctx);
+    await harness.input({ text: "&& second private item", source: "interactive" }, harness.ctx);
+    harness.setIdle(true);
+    await harness.settled({}, harness.ctx);
+    await completeCapturedTurn(harness, "combined-user");
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("first private item\n\nsecond private item");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("captures a single queued prefix follow-up after settlement", async () => {
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "&& summarize privately", source: "interactive" }, harness.ctx);
+    harness.setIdle(true);
+    await harness.settled({}, harness.ctx);
+    await completeCapturedTurn(harness, "followup-user", "summarize privately");
+
+    expect(markerFor(harness).data).toEqual({
+      schemaVersion: 3,
+      source: "interactive",
+      activeAtInput: true,
+      streamingBehavior: null,
+      taskAnchorEntryId: "task",
+      inputLeafEntryId: "active-leaf",
+      inputKind: "followUpCard",
+      observedAction: "queued_followUp",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it("records a flipped follow-up as a steer", async () => {
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "&& summarize privately", source: "interactive" }, harness.ctx);
+    await harness.input({ text: "~~", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "flipped-user", "summarize privately");
+
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("summarize privately", { deliverAs: "steer" });
+    expect(markerFor(harness).data).toMatchObject({
+      schemaVersion: 3,
+      inputLeafEntryId: "active-leaf",
+      inputKind: "followUpCard",
+      observedAction: "queued_followUp",
+      deliveryAtPersistence: "steer",
+    });
+  });
+
+  it("records a stop only after the queued delivery has a persisted user entry", async () => {
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "** stop privately", source: "interactive" }, harness.ctx);
+    expect(harness.ctx.abort).toHaveBeenCalledOnce();
+    harness.setIdle(true);
+    await harness.settled({}, harness.ctx);
+    await completeCapturedTurn(harness, "stop-user", "stop privately");
+
+    expect(harness.pi.sendUserMessage).toHaveBeenCalledWith("stop privately");
+    expect(markerFor(harness).data).toMatchObject({
+      schemaVersion: 3,
+      inputLeafEntryId: "active-leaf",
+      inputKind: "interruptCard",
+      observedAction: "abort_requested",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it("does not mark a queued card until its user message is persisted", async () => {
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "&& not delivered yet", source: "interactive" }, harness.ctx);
+
+    expect(harness.pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("captures an active brainstorm card by its exact persisted delivery", async () => {
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "?? explore a smaller change", source: "interactive" }, harness.ctx);
+    const persistedText = "Stop the previous approach. Let's brainstorm explore a smaller change before taking further action.";
+    harness.setIdle(true);
+    await harness.settled({}, harness.ctx);
+    await completeCapturedTurn(harness, "brainstorm-user", persistedText);
+
+    expect(markerFor(harness).data).toMatchObject({
+      inputKind: "brainstormCard",
+      observedAction: "abort_requested",
+      deliveryAtPersistence: "normal",
+    });
+  });
+
+  it("captures debounce-combined routed inputs as the single persisted candidate", async () => {
+    vi.stubEnv("PI_CARD_DEBOUNCE_ENABLED", "true");
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "first private message", source: "interactive" }, harness.ctx);
+    await harness.input({ text: "second private message", source: "interactive" }, harness.ctx);
+    await vi.advanceTimersByTimeAsync(600);
+    await completeCapturedTurn(harness, "debounced-user", "first private message\n\nsecond private message");
+    expect(markerFor(harness).data).toMatchObject({
+      inputKind: "jevRouted",
+      observedAction: "send",
+      deliveryAtPersistence: "steer",
+    });
+  });
+
+  it("associates the persisted text after a downstream extension transforms delivery", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    let persistedText = "";
+    harness.pi.sendUserMessage.mockImplementationOnce(async (text: string) => {
+      const result = await harness.input({ text, source: "extension" }, harness.ctx);
+      expect(result).toEqual({ action: "continue" });
+      const downstreamTransform = { action: "transform", text: `transformed ${text}` };
+      if (downstreamTransform.action === "transform") persistedText = downstreamTransform.text;
+    });
+    await harness.input({ text: "private intervention text", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "transformed-user", persistedText);
+    expect(markerFor(harness).data).toMatchObject({
+      inputKind: "jevRouted",
+      observedAction: "send",
+      deliveryAtPersistence: "steer",
+    });
+  });
+
+  it("fails closed when Pi signals a fork even if entry ancestry is still present", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "private intervention text", source: "interactive" }, harness.ctx);
+    await harness.beforeFork({}, harness.ctx);
+    await completeCapturedTurn(harness, "forked-user");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("fails closed after branch drift", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "private intervention text", source: "interactive" }, harness.ctx);
+    harness.setBranch([
+      { id: "other-root", type: "session" },
+      { id: "drift-user", type: "message", parentId: "other-root", message: { role: "user" } },
+    ]);
+    await harness.agentStart({}, harness.ctx);
+    await harness.messageStart({ message: { role: "assistant" } }, harness.ctx);
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("does not capture when the current Pi mode is not the TUI", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    harness.ctx.mode = "rpc";
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "private intervention text", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "rpc-mode-user");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("does not capture interactive inputs with attachments", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    expect(await harness.input({ text: "describe this", source: "interactive", images: [{ type: "image" }] }, harness.ctx))
+      .toEqual({ action: "continue" });
+    await completeCapturedTurn(harness, "image-user", "describe this");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("does not capture slash commands that reach the input hook", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(routeResponse("steer"));
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "/help", source: "interactive" }, harness.ctx);
+    await completeCapturedTurn(harness, "command-user", "/help");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+
+  it("does not capture non-interactive input sources", async () => {
+    const harness = createHarness(false);
+    await enableCapture(harness);
+    await harness.agentStart({}, harness.ctx);
+    await harness.input({ text: "**private rpc intervention", source: "rpc" }, harness.ctx);
+    harness.setIdle(true);
+    await harness.settled({}, harness.ctx);
+    await completeCapturedTurn(harness, "rpc-user");
+    expect(markerFor(harness)).toBeUndefined();
+  });
+});
+
+async function enableCaptureAtIdle(harness: ReturnType<typeof createHarness>, emptySession = false) {
+  await harness.startSession();
+  harness.setIdle(true);
+  if (emptySession) harness.setBranch([]);
+  await harness.command("pi-card-capture", "on");
+}
+
+async function enableCapture(harness: ReturnType<typeof createHarness>) {
+  await enableCaptureAtIdle(harness);
+  harness.setIdle(false);
+  harness.addBranchEntry({ id: "active-leaf", type: "message", parentId: "task", message: { role: "assistant" } });
+}
+
+async function persistIdleMessage(
+  harness: ReturnType<typeof createHarness>,
+  userEntryId: string,
+  userText: string,
+  parentId: string | null,
+) {
+  harness.addBranchEntry({
+    id: userEntryId,
+    type: "message",
+    parentId,
+    message: { role: "user", content: [{ type: "text", text: userText }] },
+  });
+  await harness.messageStart({ message: { role: "assistant" } }, harness.ctx);
+}
+
+async function completeCapturedTurn(
+  harness: ReturnType<typeof createHarness>,
+  userEntryId: string,
+  userText = "private intervention text",
+) {
+  harness.messageStart({ message: { role: "assistant" } }, harness.ctx);
+  harness.addBranchEntry({
+    id: "prior-assistant",
+    type: "message",
+    parentId: harness.getBranch().at(-1)?.id,
+    message: { role: "assistant" },
+  });
+  await harness.agentStart({}, harness.ctx);
+  harness.addBranchEntry({
+    id: userEntryId,
+    type: "message",
+    parentId: "prior-assistant",
+    message: { role: "user", content: [{ type: "text", text: userText }] },
+  });
+  await harness.messageStart({ message: { role: "assistant" } }, harness.ctx);
+}
+
+function markerFor(harness: ReturnType<typeof createHarness>) {
+  return harness.getBranch().find((entry) => entry.type === "custom" && entry.customType === INTERVENTION_EVIDENCE_TYPE);
+}
+
 function routeResponse(choice: string): Response {
   const probabilities = {
     stop: choice === "stop" ? 0.98 : 0.01,
@@ -831,15 +1359,44 @@ function routeResponse(choice: string): Response {
 function createHarness(initialIdle: boolean) {
   let idle = initialIdle;
   let actionsReady = false;
+  let nextEntryId = 0;
+  let branch: any[] = [
+    { id: "root", type: "session" },
+    { id: "task", type: "message", parentId: "root", message: { role: "user" } },
+  ];
   const handlers = new Map<string, (...args: any[]) => any>();
+  const sessionManager = {
+    getBranch: vi.fn(() => branch),
+    getEntries: vi.fn(() => branch),
+    getLeafId: vi.fn(() => branch.at(-1)?.id),
+  };
+  let ctx: any;
   const pi = {
     on: vi.fn((name: string, handler: (...args: any[]) => any) => handlers.set(name, handler)),
-    appendEntry: vi.fn((_type: string, _data?: unknown) => {
+    registerCommand: vi.fn((name: string, options: { handler: (...args: any[]) => any }) =>
+      handlers.set(`command:${name}`, options.handler)),
+    appendEntry: vi.fn((type: string, data?: unknown) => {
       if (!actionsReady) throw new Error("Action methods cannot be called during extension loading");
+      branch = [...branch, {
+        id: `custom-${++nextEntryId}`,
+        type: "custom",
+        customType: type,
+        data,
+        parentId: sessionManager.getLeafId() ?? null,
+      }];
     }),
-    sendUserMessage: vi.fn(),
+    sendUserMessage: vi.fn(async (text: string, options?: { deliverAs?: "steer" | "followUp" }) => {
+      const input = handlers.get("input");
+      if (input) await input({ text, source: "extension", streamingBehavior: options?.deliverAs }, ctx);
+    }),
   };
-  const ctx = { isIdle: vi.fn(() => idle), abort: vi.fn(), ui: { notify: vi.fn() } };
+  ctx = {
+    mode: "tui",
+    isIdle: vi.fn(() => idle),
+    abort: vi.fn(),
+    ui: { notify: vi.fn(), confirm: vi.fn(async () => true) },
+    sessionManager,
+  };
   registerCard(pi as any);
   return {
     pi,
@@ -847,6 +1404,15 @@ function createHarness(initialIdle: boolean) {
     input: handlers.get("input")!,
     settled: handlers.get("agent_settled")!,
     shutdown: handlers.get("session_shutdown")!,
+    messageStart: handlers.get("message_start")!,
+    agentStart: handlers.get("agent_start")!,
+    beforeFork: handlers.get("session_before_fork")!,
+    beforeCompact: handlers.get("session_before_compact")!,
+
+    command: async (name: string, args: string) => handlers.get(`command:${name}`)?.(args, ctx),
+    getBranch: () => branch,
+    setBranch(nextBranch: any[]) { branch = nextBranch; },
+    addBranchEntry(entry: any) { branch = [...branch, entry]; },
     async startSession(reason = "startup") {
       actionsReady = true;
       return handlers.get("session_start")!({ type: "session_start", reason }, ctx);

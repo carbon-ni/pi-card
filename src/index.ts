@@ -2,14 +2,34 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { debounceDelayFromEnv, TimeGapDebouncer } from "./debounce.js";
 import { classifyMessageDetailed, type RoutingExample } from "./router.js";
 import { loadRoutingExamples } from "./routing-examples.js";
+import {
+  INTERVENTION_EVIDENCE_TYPE,
+  InterventionEvidenceSession,
+  type EvidenceAction,
+  type EvidenceInputKind,
+  type EvidenceMetadata,
+  type InputSnapshot,
+} from "./intervention-evidence.js";
 
 export type SteeringTrigger =
   | { kind: "interrupt"; message: string }
   | { kind: "followUp"; message: string }
   | { kind: "brainstorm"; message: string };
 
-type QueueEntry = SteeringTrigger;
+type EvidenceIntent = {
+  session: InterventionEvidenceSession;
+  snapshot: InputSnapshot;
+  observedAction: EvidenceAction;
+  inputKind: EvidenceInputKind;
+};
+type QueueEntry = SteeringTrigger & { evidence?: EvidenceIntent };
 type InputResult = { action: "continue" | "handled" };
+type ActiveInternalDelivery = {
+  expectedText: string;
+  inputCount: number;
+  ambiguous: boolean;
+  session?: InterventionEvidenceSession;
+};
 
 export function parseTrigger(text: string): SteeringTrigger | undefined {
   const prefix = text.slice(0, 2);
@@ -37,7 +57,8 @@ function deliveredMessage(entry: QueueEntry): string {
 
 export default function registerCard(pi: ExtensionAPI): void {
   const queue: QueueEntry[] = [];
-  const internalDeliveries = new Map<string, number>();
+  let activeInternalDelivery: ActiveInternalDelivery | undefined;
+  const evidenceSessions = new WeakMap<object, InterventionEvidenceSession>();
   let routingQueue = Promise.resolve();
   let nextRouteId = 1;
   const apiKey = process.env.TYPESAFE_API_KEY;
@@ -61,22 +82,105 @@ export default function registerCard(pi: ExtensionAPI): void {
     }
   };
 
-  const sendUserMessage = async (
-    text: string,
-    options?: { deliverAs?: "steer" | "followUp" },
-  ): Promise<void> => {
-    internalDeliveries.set(text, (internalDeliveries.get(text) ?? 0) + 1);
+  const evidenceSessionFor = (ctx: any): InterventionEvidenceSession | undefined => {
+    const manager = ctx?.sessionManager;
+    if (!manager || typeof manager !== "object") return;
+    let session = evidenceSessions.get(manager);
+    if (!session) {
+      session = new InterventionEvidenceSession();
+      evidenceSessions.set(manager, session);
+    }
+    return session;
+  };
+
+  const snapshotInput = (event: any, ctx: any): { session: InterventionEvidenceSession; snapshot: InputSnapshot } | undefined => {
+    if (ctx?.mode !== "tui") return;
+    const session = evidenceSessionFor(ctx);
+    if (!session?.isEnabled) return;
     try {
-      if (options) await pi.sendUserMessage(text, options);
-      else await pi.sendUserMessage(text);
-    } finally {
-      const remaining = (internalDeliveries.get(text) ?? 1) - 1;
-      if (remaining === 0) internalDeliveries.delete(text);
-      else internalDeliveries.set(text, remaining);
+      const snapshot = session.snapshot(
+        event.source,
+        ctx.isIdle(),
+        event.streamingBehavior,
+        ctx.sessionManager.getBranch(),
+        ctx.sessionManager.getLeafId(),
+      );
+      return snapshot ? { session, snapshot } : undefined;
+    } catch {
+      return;
     }
   };
 
-  const routeText = (text: string, ctx: any, combinedFallback = false): Promise<InputResult> => {
+  const evidenceIntent = (
+    input: { session: InterventionEvidenceSession; snapshot: InputSnapshot } | undefined,
+    observedAction: EvidenceAction,
+    inputKind: EvidenceInputKind,
+  ): EvidenceIntent | undefined => input ? { ...input, observedAction, inputKind } : undefined;
+
+  const evidenceMetadata = (evidence: EvidenceIntent, deliveryAtPersistence: "normal" | "steer" | "followUp"): EvidenceMetadata => ({
+    schemaVersion: 3,
+    source: evidence.snapshot.source,
+    activeAtInput: evidence.snapshot.activeAtInput,
+    streamingBehavior: evidence.snapshot.streamingBehavior,
+    taskAnchorEntryId: evidence.snapshot.taskAnchorEntryId,
+    inputLeafEntryId: evidence.snapshot.inputLeafEntryId,
+    inputKind: evidence.inputKind,
+    observedAction: evidence.observedAction,
+    deliveryAtPersistence,
+  });
+
+  const armHostPersistedInput = (
+    input: { session: InterventionEvidenceSession; snapshot: InputSnapshot } | undefined,
+    inputKind: EvidenceInputKind,
+    observedAction: EvidenceAction,
+  ): void => {
+    const evidence = evidenceIntent(input, observedAction, inputKind);
+    if (evidence && !evidence.session.arm(evidence.snapshot, evidenceMetadata(evidence, "normal"))) {
+      evidence.session.failClosed();
+    }
+  };
+
+  const sendUserMessage = async (
+    text: string,
+    options?: { deliverAs?: "steer" | "followUp" },
+    evidence?: EvidenceIntent,
+  ): Promise<void> => {
+    const previousDelivery = activeInternalDelivery;
+    if (previousDelivery) {
+      previousDelivery.ambiguous = true;
+      previousDelivery.session?.failClosed();
+      evidence?.session.failClosed();
+    }
+    const delivery: ActiveInternalDelivery = {
+      expectedText: text,
+      inputCount: 0,
+      ambiguous: false,
+      session: evidence?.session,
+    };
+    activeInternalDelivery = delivery;
+    const metadata = evidence ? evidenceMetadata(evidence, options?.deliverAs ?? "normal") : undefined;
+    if (evidence && metadata && !evidence.session.arm(evidence.snapshot, metadata)) {
+      evidence.session.failClosed();
+    }
+    try {
+      if (options) await pi.sendUserMessage(text, options);
+      else await pi.sendUserMessage(text);
+    } catch (error) {
+      evidence?.session.failClosed();
+      throw error;
+    } finally {
+      if (evidence && (delivery.inputCount !== 1 || delivery.ambiguous)) evidence.session.failClosed();
+      if (activeInternalDelivery === delivery) activeInternalDelivery = previousDelivery;
+    }
+  };
+
+  const routeText = (
+    text: string,
+    ctx: any,
+    combinedFallback = false,
+    input?: { session: InterventionEvidenceSession; snapshot: InputSnapshot },
+    inputKind: EvidenceInputKind = "jevRouted",
+  ): Promise<InputResult> => {
     const routeId = nextRouteId++;
     const routeTask = routingQueue.then(async () => {
       let decision;
@@ -94,12 +198,14 @@ export default function registerCard(pi: ExtensionAPI): void {
         if (!combinedFallback) {
           // Preserve Pi's native behavior when routing is unavailable.
           diagnostic("action", { routeId, action: "native_pass_through", reason: failure });
+          armHostPersistedInput(input, inputKind, "continue");
           return { action: "continue" as const };
         }
         const mode = ctx.isIdle() ? "normal" : "steer";
         diagnostic("action", { routeId, action: "safe_delivery", mode });
-        if (ctx.isIdle()) await sendUserMessage(text);
-        else await sendUserMessage(text, { deliverAs: "steer" });
+        const evidence = evidenceIntent(input, "send", inputKind);
+        if (ctx.isIdle()) await sendUserMessage(text, undefined, evidence);
+        else await sendUserMessage(text, { deliverAs: "steer" }, evidence);
         return { action: "handled" as const };
       }
 
@@ -116,13 +222,18 @@ export default function registerCard(pi: ExtensionAPI): void {
         if (ctx.isIdle()) {
           if (combinedFallback) {
             diagnostic("action", { routeId, action: "deliver", mode: "normal", reason: "unclear_while_idle" });
-            await sendUserMessage(text);
+            await sendUserMessage(text, undefined, evidenceIntent(input, "send", inputKind));
             return { action: "handled" as const };
           }
           diagnostic("action", { routeId, action: "native_pass_through", reason: "unclear_while_idle" });
+          armHostPersistedInput(input, inputKind, "continue");
           return { action: "continue" as const };
         }
-        queue.push({ kind: "followUp", message: text });
+        queue.push({
+          kind: "followUp",
+          message: text,
+          evidence: evidenceIntent(input, "queued_followUp", inputKind),
+        });
         diagnostic("action", { routeId, action: "queue", kind: "followUp", reason: "unclear_while_active" });
         ctx.ui.notify("Unclear intent; queued as a follow-up", "info");
         return { action: "handled" as const };
@@ -130,18 +241,22 @@ export default function registerCard(pi: ExtensionAPI): void {
 
       if (ctx.isIdle()) {
         diagnostic("action", { routeId, action: "deliver", mode: "normal", reason: "idle" });
-        await sendUserMessage(text);
+        await sendUserMessage(text, undefined, evidenceIntent(input, "send", inputKind));
         return { action: "handled" as const };
       }
       if (route === "stop") {
-        queue.push({ kind: "interrupt", message: text });
+        queue.push({
+          kind: "interrupt",
+          message: text,
+          evidence: evidenceIntent(input, "abort_requested", inputKind),
+        });
         diagnostic("action", { routeId, action: "abort_and_queue", kind: "interrupt" });
         ctx.abort();
         ctx.ui.notify("Current work interrupted", "warning");
       } else {
         const mode = route === "steer" ? "steer" : "followUp";
         diagnostic("action", { routeId, action: "deliver", mode, reason: "jev_route" });
-        await sendUserMessage(text, { deliverAs: mode });
+        await sendUserMessage(text, { deliverAs: mode }, evidenceIntent(input, "send", inputKind));
       }
       return { action: "handled" as const };
     });
@@ -150,10 +265,62 @@ export default function registerCard(pi: ExtensionAPI): void {
   };
 
   const debouncer = debounceEnabled
-    ? new TimeGapDebouncer<InputResult, any>(debounceDelay, (text, ctx) => routeText(text, ctx, true))
+    ? new TimeGapDebouncer<InputResult, { ctx: any; input?: { session: InterventionEvidenceSession; snapshot: InputSnapshot } }>(
+      debounceDelay,
+      (text, context) => routeText(text, context.ctx, true, context.input),
+    )
     : undefined;
 
-  pi.on("session_start", (event) => {
+  pi.registerCommand("pi-card-capture", {
+    description: "Enable or disable prospective Pi Card intervention markers for this session",
+    handler: async (args, ctx) => {
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify("Pi Card capture can only be controlled from the interactive TUI", "warning");
+        return;
+      }
+      const session = evidenceSessionFor(ctx);
+      if (!session?.isReady) {
+        ctx.ui.notify("Pi Card capture is available after the session starts", "warning");
+        return;
+      }
+
+      const action = args.trim().toLowerCase();
+      if (action === "off") {
+        session.disable();
+        ctx.ui.notify("Pi Card capture is off", "info");
+        return;
+      }
+      if (action !== "on") {
+        ctx.ui.notify("Usage: /pi-card-capture on|off", "warning");
+        return;
+      }
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Enable Pi Card capture only while the agent is idle", "warning");
+        return;
+      }
+      let confirmed = false;
+      try {
+        confirmed = await ctx.ui.confirm(
+          "Enable prospective Pi Card capture?",
+          "Capture future interactive Jev-routed text and **/&&/?? cards while Pi is idle or active. The marker stores no input text or Jev result; the exact persisted Pi Card user message remains in this session and may differ from what you typed (prefixes can be stripped or text transformed). Metadata includes idle/active, card kind, action, delivery, branch IDs, and Pi's standard timestamp. Commands handled before Pi Card, attachments, extension/RPC inputs are excluded. Capture is session-only; turning it off does not delete markers, and mining requires separate consent. Continue?",
+        );
+      } catch {
+        // Capture must stay off when interactive confirmation is unavailable.
+      }
+      if (!confirmed) {
+        ctx.ui.notify("Pi Card capture remains off; confirmation is required", "info");
+        return;
+      }
+      if (!session.enable(ctx.isIdle())) {
+        ctx.ui.notify("Enable Pi Card capture only while the agent is idle", "warning");
+        return;
+      }
+      ctx.ui.notify("Pi Card capture is on for this session; persisted-message metadata only", "info");
+    },
+  });
+
+  pi.on("session_start", (event, ctx) => {
+    evidenceSessionFor(ctx)?.startSession();
     diagnostic("session_start", {
       reason: event.reason,
       apiKeyConfigured: Boolean(apiKey),
@@ -165,16 +332,60 @@ export default function registerCard(pi: ExtensionAPI): void {
     });
   });
 
+  const invalidateEvidence = (_event: any, ctx: any): void => {
+    evidenceSessionFor(ctx)?.failClosed();
+  };
+  pi.on("session_before_switch", invalidateEvidence);
+  pi.on("session_before_fork", invalidateEvidence);
+  pi.on("session_before_compact", invalidateEvidence);
+  pi.on("session_compact", invalidateEvidence);
+
+  pi.on("agent_start", (_event, ctx) => {
+    evidenceSessionFor(ctx)?.noteAgentStart();
+  });
+
+  pi.on("message_start", (event, ctx) => {
+    if (event.message?.role !== "assistant") return;
+    const session = evidenceSessionFor(ctx);
+    if (!session?.hasPending) return;
+
+    try {
+      const result = session.correlate(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
+      if (result.status !== "matched") return;
+
+      pi.appendEntry(INTERVENTION_EVIDENCE_TYPE, result.metadata);
+      const markerId = ctx.sessionManager.getLeafId();
+      const marker = ctx.sessionManager.getEntries().find((entry: any) => entry.id === markerId);
+      if (marker?.parentId !== result.entryId) session.failClosed();
+    } catch {
+      session.failClosed();
+    }
+  });
+
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") {
-      if (internalDeliveries.has(event.text)) {
-        diagnostic("input", { branch: "internal_extension" });
+      if (activeInternalDelivery) {
+        const delivery = activeInternalDelivery;
+        delivery.inputCount++;
+        if (delivery.inputCount !== 1 || event.text !== delivery.expectedText || event.images?.length) {
+          delivery.ambiguous = true;
+          delivery.session?.failClosed();
+        }
+        diagnostic("input", { branch: delivery.ambiguous ? "ambiguous_internal_extension" : "internal_extension" });
         return { action: "continue" };
       }
+      const session = evidenceSessionFor(ctx);
+      if (session?.hasPending) session.failClosed();
       diagnostic("input", { branch: "extension_bypass" });
       await debouncer?.flush();
       return { action: "continue" };
     }
+
+    const evidenceSession = evidenceSessionFor(ctx);
+    if (evidenceSession?.hasPending) evidenceSession.failClosed();
+    const captureEligible = ctx?.mode === "tui" && event.source === "interactive" &&
+      !event.images?.length && !event.text?.trimStart().startsWith("/");
+    const inputSnapshot = captureEligible ? snapshotInput(event, ctx) : undefined;
 
     if (event.text === "~~") {
       diagnostic("input", { branch: "flip" });
@@ -188,7 +399,8 @@ export default function registerCard(pi: ExtensionAPI): void {
 
       queue.pop();
       diagnostic("action", { action: "deliver", mode: "steer", reason: "flipped_followUp" });
-      await sendUserMessage(last.message, { deliverAs: "steer" });
+      const evidence = last.evidence;
+      await sendUserMessage(last.message, { deliverAs: "steer" }, evidence);
       ctx.ui.notify(`Flipped to steer: ${last.message}`, "info");
       return { action: "handled" };
     }
@@ -197,13 +409,20 @@ export default function registerCard(pi: ExtensionAPI): void {
     if (trigger) {
       diagnostic("input", { branch: "prefix", kind: trigger.kind });
       await debouncer?.flush();
+      const inputKind: EvidenceInputKind = trigger.kind === "interrupt"
+        ? "interruptCard"
+        : trigger.kind === "followUp" ? "followUpCard" : "brainstormCard";
       if (ctx.isIdle()) {
         diagnostic("action", { action: "deliver", mode: "normal", reason: "prefix_while_idle", kind: trigger.kind });
-        return { action: "transform", text: immediateMessage(trigger) };
+        const transformedText = immediateMessage(trigger);
+        armHostPersistedInput(inputSnapshot, inputKind, "transform");
+        return { action: "transform", text: transformedText };
       }
 
-      queue.push(trigger);
-      diagnostic("action", { action: trigger.kind === "followUp" ? "queue" : "abort_and_queue", kind: trigger.kind });
+      const action = trigger.kind === "followUp" ? "queue" : "abort_and_queue";
+      const observedAction = trigger.kind === "followUp" ? "queued_followUp" : "abort_requested";
+      queue.push({ ...trigger, evidence: evidenceIntent(inputSnapshot, observedAction, inputKind) });
+      diagnostic("action", { action, kind: trigger.kind });
       if (trigger.kind === "followUp") {
         ctx.ui.notify("Follow-up queued", "info");
       } else {
@@ -222,11 +441,11 @@ export default function registerCard(pi: ExtensionAPI): void {
 
     if (debouncer) {
       diagnostic("input", { branch: "debounced_interactive" });
-      void debouncer.add(event.text, ctx);
+      void debouncer.add(event.text, { ctx, input: inputSnapshot });
       return { action: "handled" };
     }
     diagnostic("input", { branch: "immediate_interactive" });
-    return routeText(event.text, ctx);
+    return routeText(event.text, ctx, false, inputSnapshot);
   });
 
   pi.on("session_shutdown", async () => {
@@ -243,6 +462,10 @@ export default function registerCard(pi: ExtensionAPI): void {
       count: entries.length,
       kinds: [...new Set(entries.map((entry) => entry.kind))].join(","),
     });
-    await sendUserMessage(entries.map(deliveredMessage).join("\n\n"));
+    const evidence = entries.length === 1 ? entries[0].evidence : undefined;
+    if (entries.length > 1) {
+      for (const entry of entries) entry.evidence?.session.failClosed();
+    }
+    await sendUserMessage(entries.map(deliveredMessage).join("\n\n"), undefined, evidence);
   });
 }

@@ -35,7 +35,7 @@ try {
     .map((file) => file.replace(/^package\//, "").replace(/\/$/, ""));
   const unexpected = packedFiles.find((file) => !allowed(file));
   if (unexpected) throw new Error(`Unexpected packed file: ${unexpected}`);
-  for (const required of ["package.json", "README.md", "LICENSE", "src/index.ts", "src/router.ts", "docs/configuration.md", "skills/pi-card-callibration/SKILL.md", "skills/pi-card-callibration/scripts/mine-sessions.mjs"]) {
+  for (const required of ["package.json", "README.md", "LICENSE", "src/index.ts", "src/intervention-evidence.ts", "src/router.ts", "docs/configuration.md", "skills/pi-card-callibration/SKILL.md", "skills/pi-card-callibration/scripts/mine-sessions.mjs"]) {
     if (!packedFiles.includes(required)) throw new Error(`Required packed file missing: ${required}`);
   }
   if (packedFiles.some((file) => /(^|\/)(\.pi|\.tmp|tests?|node_modules)(\/|$)/i.test(file) || /\.(test|spec)\.[cm]?tsx?$/.test(file))) {
@@ -86,8 +86,8 @@ try {
     const result = loader.getExtensions();
     if (result.errors.length) throw new Error(JSON.stringify(result.errors));
     const loaded = result.extensions.find((extension) => extension.resolvedPath === extensionPath);
-    if (!loaded?.handlers.has("input") || !loaded.handlers.has("agent_settled")) {
-      throw new Error("Pi host did not load Pi Card's registered input hooks");
+    if (!loaded?.handlers.has("input") || !loaded.handlers.has("message_start") || !loaded.handlers.has("agent_settled")) {
+      throw new Error("Pi host did not load Pi Card's registered input and evidence hooks");
     }
     const skills = loader.getSkills();
     if (skills.diagnostics.length) throw new Error(JSON.stringify(skills.diagnostics));

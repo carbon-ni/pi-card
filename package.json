@@ -19,6 +19,7 @@
   "files": [
     "LICENSE",
     "src/index.ts",
+    "src/intervention-evidence.ts",
     "src/router.ts",
     "src/debounce.ts",
     "src/routing-examples.ts",
