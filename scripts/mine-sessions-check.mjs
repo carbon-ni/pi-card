@@ -200,6 +200,18 @@ test("creates an offline XSS-safe reviewer and exports user-selected labels", as
     assert.equal(exported.label, "stop");
     assert.equal(exported.stopConfirmed, true);
     assert.equal(exported.text, hostileText);
+
+    const [messageInput, contextInput] = controls.filter((control) => control.tagName === "textarea");
+    messageInput.value = "changed after confirmation";
+    messageInput.listeners.input();
+    download.click();
+    assert.equal(blobs.length, 2, "editing the message must revoke stop confirmation");
+    stopCheckbox.checked = true;
+    stopCheckbox.listeners.change();
+    contextInput.value = "changed context";
+    contextInput.listeners.input();
+    download.click();
+    assert.equal(blobs.length, 2, "editing context must revoke stop confirmation");
     await assert.rejects(runMiner({ ...f, consent: "yes", html: "review.html" }), /EEXIST/);
     assert.equal(await readFile(htmlPath, "utf8"), html);
 

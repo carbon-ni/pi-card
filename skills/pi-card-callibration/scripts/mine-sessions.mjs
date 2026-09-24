@@ -190,8 +190,13 @@ const REVIEWER_SCRIPT = `(() => {
     stopConfirm.addEventListener("change", () => { review.stopConfirmed = stopConfirm.checked; });
     stopLabel.append(stopConfirm, document.createTextNode(" I explicitly confirm this individual stop example."));
     card.append(stopLabel);
-    message.addEventListener("input", () => { review.text = message.value; });
-    context.addEventListener("input", () => { review.context = context.value; });
+    const revokeStopConfirmation = () => {
+      if (review.label !== "stop") return;
+      stopConfirm.checked = false;
+      review.stopConfirmed = false;
+    };
+    message.addEventListener("input", () => { review.text = message.value; revokeStopConfirmation(); });
+    context.addEventListener("input", () => { review.context = context.value; revokeStopConfirmation(); });
     host.append(card);
   });
 
@@ -248,6 +253,7 @@ body{font:16px/1.5 system-ui,sans-serif;max-width:880px;margin:2rem auto;padding
 <p id="summary" aria-live="polite"></p>
 <div id="candidate-list"></div>
 <button id="download" type="button">Download reviewed labels JSON</button>
+<p><small>Your browser chooses the download location and file permissions. Save the reviewed JSON in a private folder, restrict its access, and delete it when finished; it may contain sensitive edited text.</small></p>
 <script id="candidate-data" type="application/json">${jsonForHtml(result)}</script>
 <script>${REVIEWER_SCRIPT}</script>
 </body>
