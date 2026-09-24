@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -17,13 +18,13 @@ function parseArgs(args) {
   const options = { files: MAX_FILES, limit: MAX_CANDIDATES };
   for (let i = 0; i < args.length; i++) {
     const key = args[i];
-    if (!["--output", "--project", "--since", "--until", "--files", "--limit", "--consent"].includes(key)) {
+    if (!["--output", "--html", "--project", "--since", "--until", "--files", "--limit", "--consent"].includes(key)) {
       throw new Error(`Unknown option: ${key}`);
     }
     const value = args[++i];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${key}`);
     const name = key.slice(2);
-    options[name] = ["output", "project", "since", "until", "consent"].includes(name) ? value : Number(value);
+    options[name] = ["output", "html", "project", "since", "until", "consent"].includes(name) ? value : Number(value);
     if (name === "consent" && value !== "yes") throw new Error("Explicit consent is required before reading session JSONL");
     if ((name === "files" && (!Number.isInteger(options.files) || options.files < 1 || options.files > MAX_FILES)) ||
         (name === "limit" && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > MAX_CANDIDATES))) {
@@ -36,8 +37,9 @@ function parseArgs(args) {
     const timestamp = Date.parse(`${value}T00:00:00Z`);
     return !Number.isNaN(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
   };
-  if (!options.output || path.basename(options.output) !== options.output || [".", ".."].includes(options.output) || !options.project || !path.isAbsolute(options.project) || !validDate(options.since) || !validDate(options.until)) {
-    throw new Error("Usage: mine-sessions.mjs --consent yes --project <absolute-cwd> --since YYYY-MM-DD --until YYYY-MM-DD --output <filename> [--files 1-5] [--limit 1-20]");
+  const validFilename = (value) => value && path.basename(value) === value && ![".", ".."].includes(value);
+  if (!validFilename(options.output) || (options.html && !validFilename(options.html)) || options.html === options.output || !options.project || !path.isAbsolute(options.project) || !validDate(options.since) || !validDate(options.until)) {
+    throw new Error("Usage: mine-sessions.mjs --consent yes --project <absolute-cwd> --since YYYY-MM-DD --until YYYY-MM-DD --output <filename> [--html <filename>] [--files 1-5] [--limit 1-20]");
   }
   if (options.since > options.until) throw new Error("--since must be on or before --until");
   return options;
@@ -129,7 +131,131 @@ function redact(text) {
     .replaceAll(os.homedir(), "[HOME]");
 }
 
-async function mine({ files, limit, output, project, since, until }) {
+const REVIEWER_SCRIPT = `(() => {
+  const source = JSON.parse(document.getElementById("candidate-data").textContent);
+  const host = document.getElementById("candidate-list");
+  const summary = document.getElementById("summary");
+  const reviews = source.candidates.map((candidate) => ({ candidate, label: "", text: candidate.text, context: candidate.context, stopConfirmed: false }));
+  const labels = [["", "Unreviewed"], ["steer", "Steer"], ["stop", "Stop"], ["followUp", "Follow up"], ["other", "Other"], ["unclear", "Unclear"], ["skip", "Skip"]];
+  const exportButton = document.getElementById("download");
+
+  function updateSummary() {
+    const counts = Object.fromEntries(labels.map(([value]) => [value || "unreviewed", 0]));
+    reviews.forEach((review) => { counts[review.label || "unreviewed"]++; });
+    summary.textContent = "Total: " + reviews.length + " · Unreviewed: " + counts.unreviewed + " · Steer: " + counts.steer + " · Stop: " + counts.stop + " · Follow up: " + counts.followUp + " · Other: " + counts.other + " · Unclear: " + counts.unclear + " · Skip: " + counts.skip;
+  }
+
+  reviews.forEach((review, index) => {
+    const card = document.createElement("article");
+    const heading = document.createElement("h2");
+    heading.textContent = "Example " + (index + 1);
+    card.append(heading);
+    const messageLabel = document.createElement("label");
+    messageLabel.textContent = "User message";
+    const message = document.createElement("textarea");
+    message.value = review.text;
+    message.rows = 4;
+    messageLabel.append(message);
+    card.append(messageLabel);
+    const contextLabel = document.createElement("label");
+    contextLabel.textContent = "Prior context (linked ancestor)";
+    const context = document.createElement("textarea");
+    context.value = review.context;
+    context.rows = 2;
+    contextLabel.append(context);
+    card.append(contextLabel);
+    const choiceLabel = document.createElement("label");
+    choiceLabel.textContent = "Human label";
+    const choice = document.createElement("select");
+    labels.forEach(([value, text]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      choice.append(option);
+    });
+    choice.addEventListener("change", () => {
+      review.label = choice.value;
+      if (choice.value !== "stop") review.stopConfirmed = false;
+      stopLabel.hidden = choice.value !== "stop";
+      stopConfirm.checked = false;
+      review.stopConfirmed = false;
+      updateSummary();
+    });
+    choiceLabel.append(choice);
+    card.append(choiceLabel);
+    const stopLabel = document.createElement("label");
+    stopLabel.hidden = true;
+    const stopConfirm = document.createElement("input");
+    stopConfirm.type = "checkbox";
+    stopConfirm.addEventListener("change", () => { review.stopConfirmed = stopConfirm.checked; });
+    stopLabel.append(stopConfirm, document.createTextNode(" I explicitly confirm this individual stop example."));
+    card.append(stopLabel);
+    message.addEventListener("input", () => { review.text = message.value; });
+    context.addEventListener("input", () => { review.context = context.value; });
+    host.append(card);
+  });
+
+  exportButton.addEventListener("click", () => {
+    if (reviews.some((review) => review.label === "stop" && !review.stopConfirmed)) {
+      summary.textContent = "Confirm each stop example individually before export.";
+      return;
+    }
+    const payload = {
+      dateRange: source.dateRange,
+      candidates: reviews.filter((review) => review.label).map((review) => ({
+        id: review.candidate.id, text: review.text, context: review.context,
+        activeStatus: review.candidate.activeStatus, label: review.label,
+        stopConfirmed: review.label === "stop" && review.stopConfirmed,
+      })),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "pi-card-calibration-reviewed.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  });
+  updateSummary();
+})();`;
+
+function jsonForHtml(value) {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
+function renderReviewer(result) {
+  const scriptHash = createHash("sha256").update(REVIEWER_SCRIPT).digest("base64");
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${scriptHash}'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Pi Card local calibration review</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;max-width:880px;margin:2rem auto;padding:0 1rem;color:#18212b;background:#f7f8fa}h1{font-size:1.7rem}article{background:white;border:1px solid #cbd2da;border-radius:8px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.8rem 0}textarea,select{display:block;box-sizing:border-box;width:100%;font:inherit;padding:.6rem;border:1px solid #8793a1;border-radius:4px}input[type=checkbox]{width:1.1rem;height:1.1rem}button{font:inherit;padding:.65rem 1rem;border:0;border-radius:4px;background:#123f70;color:white;cursor:pointer}#summary{font-weight:600;position:sticky;top:0;background:#f7f8fa;padding:.6rem 0}small{color:#414d59}
+</style>
+</head>
+<body>
+<h1>Local Pi Card calibration review</h1>
+<p>This page is offline. Review and edit each redacted example, then label it. Nothing is sent anywhere and no Pi Card configuration is changed. Stop labels require a separate per-example confirmation.</p>
+<p><small>Date range: ${result.dateRange.since} through ${result.dateRange.until} UTC. Delete this sensitive page after review.</small></p>
+<p id="summary" aria-live="polite"></p>
+<div id="candidate-list"></div>
+<button id="download" type="button">Download reviewed labels JSON</button>
+<script id="candidate-data" type="application/json">${jsonForHtml(result)}</script>
+<script>${REVIEWER_SCRIPT}</script>
+</body>
+</html>
+`;
+}
+
+async function mine({ files, html, limit, output, project, since, until }) {
   const agentDir = path.resolve(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent"));
   const agentStat = await lstat(agentDir);
   if (agentStat.isSymbolicLink() || !agentStat.isDirectory()) throw new Error("Pi agent config directory must be a real directory, not a symlink");
@@ -211,13 +337,15 @@ async function mine({ files, limit, output, project, since, until }) {
     if (results.length >= limit) break;
   }
   const result = { source: "local-pi-sessions", project: "[REDACTED_PATH]", dateRange: { since, until, timeZone: "UTC" }, selectedSessionFiles: selected.length, candidates: results };
+  if (html) await writeFile(path.join(canonicalAgentDir, html), renderReviewer(result), { flag: "wx", mode: 0o600 });
   await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   return result;
 }
 
 try {
-  const result = await mine(parseArgs(process.argv.slice(2)));
-  console.log(`Wrote ${result.candidates.length} redacted candidates from ${result.selectedSessionFiles} session files for the approved project/date range.`);
+  const options = parseArgs(process.argv.slice(2));
+  const result = await mine(options);
+  console.log(`Wrote ${result.candidates.length} redacted candidates from ${result.selectedSessionFiles} session files. Candidate JSON: ${options.output}${options.html ? `; local HTML reviewer: ${options.html}` : ""}.`);
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

