@@ -222,6 +222,8 @@ test("rejects symlinked session roots, unbounded paths, and reversed ranges", as
     await assert.rejects(runMiner({ ...f, consent: "yes", files: 6 }), /--files must be between/);
     const args = ["--consent", "yes", "--project", f.project, "--since", "2026-09-21", "--until", date, "--output", "reverse.json"];
     await assert.rejects(execFile(process.execPath, [script, ...args], { env }), /--since must be on or before/);
+    const invalidDate = ["--consent", "yes", "--project", f.project, "--since", "2026-02-30", "--until", "2026-03-02", "--output", f.output];
+    await assert.rejects(execFile(process.execPath, [script, ...invalidDate], { env }), /Usage: mine-sessions/);
     await assert.rejects(readFile(await outputFile(f)), { code: "ENOENT" });
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });

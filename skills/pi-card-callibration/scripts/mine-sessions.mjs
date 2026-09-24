@@ -31,7 +31,11 @@ function parseArgs(args) {
     }
   }
   if (options.consent !== "yes") throw new Error("Explicit consent is required before reading session JSONL");
-  const validDate = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+  const validDate = (value) => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const timestamp = Date.parse(`${value}T00:00:00Z`);
+    return !Number.isNaN(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
+  };
   if (!options.output || path.basename(options.output) !== options.output || [".", ".."].includes(options.output) || !options.project || !path.isAbsolute(options.project) || !validDate(options.since) || !validDate(options.until)) {
     throw new Error("Usage: mine-sessions.mjs --consent yes --project <absolute-cwd> --since YYYY-MM-DD --until YYYY-MM-DD --output <filename> [--files 1-5] [--limit 1-20]");
   }
