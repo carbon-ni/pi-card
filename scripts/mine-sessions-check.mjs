@@ -146,6 +146,7 @@ test("creates an offline XSS-safe reviewer and exports user-selected labels", as
     const html = await readFile(htmlPath, "utf8");
     assert.equal((await stat(htmlPath)).mode & 0o777, 0o600);
     assert.match(html, /connect-src 'none'/);
+    assert.match(html, /\[hidden\]\{display:none!important\}/);
     const appScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     assert.ok(appScript);
     const scriptHash = createHash("sha256").update(appScript).digest("base64");
@@ -180,6 +181,8 @@ test("creates an offline XSS-safe reviewer and exports user-selected labels", as
     const controls = descendants(host);
     const select = controls.find((control) => control.tagName === "select");
     const stopCheckbox = controls.find((control) => control.tagName === "input");
+    const stopLabel = controls.find((control) => control.tagName === "label" && control.hidden === true);
+    assert.equal(stopLabel.hidden, true, "stop confirmation starts hidden");
     select.value = "steer";
     select.listeners.change();
     download.click();
@@ -187,6 +190,7 @@ test("creates an offline XSS-safe reviewer and exports user-selected labels", as
 
     select.value = "stop";
     select.listeners.change();
+    assert.equal(stopLabel.hidden, false, "stop confirmation appears only for stop labels");
     download.click();
     assert.equal(blobs.length, 1, "unconfirmed stop must not export");
     stopCheckbox.checked = true;
@@ -198,6 +202,14 @@ test("creates an offline XSS-safe reviewer and exports user-selected labels", as
     assert.equal(exported.text, hostileText);
     await assert.rejects(runMiner({ ...f, consent: "yes", html: "review.html" }), /EEXIST/);
     assert.equal(await readFile(htmlPath, "utf8"), html);
+
+    const candidatesBefore = await readFile(await outputFile(f), "utf8");
+    await assert.rejects(runMiner({ ...f, consent: "yes", html: "orphan.html" }), /EEXIST/);
+    assert.equal(await readFile(await outputFile(f), "utf8"), candidatesBefore);
+    await assert.rejects(readFile(path.join(f.agentDir, "orphan.html")), { code: "ENOENT" });
+
+    await assert.rejects(runMiner({ ...f, output: "new-candidates.json", consent: "yes", html: "review.html" }), /EEXIST/);
+    await assert.rejects(readFile(path.join(f.agentDir, "new-candidates.json")), { code: "ENOENT" });
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath, writeFile } from "node:fs/promises";
+import { lstat, open, readdir, realpath, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -238,7 +238,7 @@ function renderReviewer(result) {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${scriptHash}'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Pi Card local calibration review</title>
 <style>
-body{font:16px/1.5 system-ui,sans-serif;max-width:880px;margin:2rem auto;padding:0 1rem;color:#18212b;background:#f7f8fa}h1{font-size:1.7rem}article{background:white;border:1px solid #cbd2da;border-radius:8px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.8rem 0}textarea,select{display:block;box-sizing:border-box;width:100%;font:inherit;padding:.6rem;border:1px solid #8793a1;border-radius:4px}input[type=checkbox]{width:1.1rem;height:1.1rem}button{font:inherit;padding:.65rem 1rem;border:0;border-radius:4px;background:#123f70;color:white;cursor:pointer}#summary{font-weight:600;position:sticky;top:0;background:#f7f8fa;padding:.6rem 0}small{color:#414d59}
+body{font:16px/1.5 system-ui,sans-serif;max-width:880px;margin:2rem auto;padding:0 1rem;color:#18212b;background:#f7f8fa}h1{font-size:1.7rem}article{background:white;border:1px solid #cbd2da;border-radius:8px;padding:1rem;margin:1rem 0}label{display:block;font-weight:600;margin:.8rem 0}[hidden]{display:none!important}textarea,select{display:block;box-sizing:border-box;width:100%;font:inherit;padding:.6rem;border:1px solid #8793a1;border-radius:4px}input[type=checkbox]{width:1.1rem;height:1.1rem}button{font:inherit;padding:.65rem 1rem;border:0;border-radius:4px;background:#123f70;color:white;cursor:pointer}#summary{font-weight:600;position:sticky;top:0;background:#f7f8fa;padding:.6rem 0}small{color:#414d59}
 </style>
 </head>
 <body>
@@ -253,6 +253,28 @@ body{font:16px/1.5 system-ui,sans-serif;max-width:880px;margin:2rem auto;padding
 </body>
 </html>
 `;
+}
+
+async function writeOutputs({ htmlPath, htmlText, outputPath, outputText }) {
+  const created = [];
+  const createFile = async (file, content) => {
+    const handle = await open(file, "wx", 0o600);
+    created.push(file);
+    try { await handle.writeFile(content); }
+    finally { await handle.close(); }
+  };
+  try {
+    if (htmlPath) await createFile(htmlPath, htmlText);
+    await createFile(outputPath, outputText);
+  } catch (error) {
+    const cleanupErrors = [];
+    for (const file of created.reverse()) {
+      try { await unlink(file); }
+      catch (cleanupError) { if (cleanupError.code !== "ENOENT") cleanupErrors.push(cleanupError); }
+    }
+    if (cleanupErrors.length) throw new Error(`${error.message}; failed to remove partial output`);
+    throw error;
+  }
 }
 
 async function mine({ files, html, limit, output, project, since, until }) {
@@ -337,8 +359,12 @@ async function mine({ files, html, limit, output, project, since, until }) {
     if (results.length >= limit) break;
   }
   const result = { source: "local-pi-sessions", project: "[REDACTED_PATH]", dateRange: { since, until, timeZone: "UTC" }, selectedSessionFiles: selected.length, candidates: results };
-  if (html) await writeFile(path.join(canonicalAgentDir, html), renderReviewer(result), { flag: "wx", mode: 0o600 });
-  await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  await writeOutputs({
+    htmlPath: html ? path.join(canonicalAgentDir, html) : null,
+    htmlText: html ? renderReviewer(result) : null,
+    outputPath,
+    outputText: `${JSON.stringify(result, null, 2)}\n`,
+  });
   return result;
 }
 
