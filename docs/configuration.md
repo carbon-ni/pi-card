@@ -33,6 +33,10 @@ Create `pi-card.json` in Pi's agent config directory. It is normally `~/.pi/agen
 
 These are preferences for similar wording, not exact phrase shortcuts. A stop example does not bypass the stop safety check. Pi Card reads only this user config, not project config. It accepts up to 20 examples, up to 1,000 characters per example, and a file up to 32 KB. Empty text, unknown routes, or the same text assigned to different routes make the whole config invalid. It then warns without showing the content and uses the normal Jev rules. Reload Pi after editing the file with `/reload`.
 
+## Calibrate from past sessions
+
+The packaged `/skill:pi-card-callibration` can help review a small sample of past user messages. It does not run automatically. Invocation is not consent: before any session JSONL is read, the skill states the sessions root, current-project filter, inclusive date range, file/candidate caps, and local extraction, then asks for explicit approval. It mines only approved matching sessions, redacts likely personal data locally, and requires you to label each candidate. No session text is sent to TypeSafe or another external service. Review redactions carefully; they are best-effort. Only examples you approve can be added to `pi-card.json`, and each `stop` example requires separate confirmation. The stop confidence/probability gate is unchanged.
+
 ## Combine messages before routing
 
 Jev normally classifies each submitted message on its own. If you tend to send a correction right after the first message, enable a short pause:

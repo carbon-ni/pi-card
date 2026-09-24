@@ -22,11 +22,14 @@
     "src/router.ts",
     "src/debounce.ts",
     "src/routing-examples.ts",
+    "skills/pi-card-callibration/SKILL.md",
+    "skills/pi-card-callibration/scripts/mine-sessions.mjs",
     "docs/",
     "README.md"
   ],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./src/index.ts"],
+    "skills": ["./skills"]
   },
   "scripts": {
     "lint": "tsc --noEmit",
@@ -35,7 +38,8 @@
     "eval:jev": "node --experimental-strip-types scripts/eval-jev.ts",
     "verify:package": "node scripts/verify-package.mjs",
     "test:package-verifier": "node --test scripts/verify-package-check.mjs",
-    "test:release-publish": "node --test scripts/release-publish-check.mjs"
+    "test:release-publish": "node --test scripts/release-publish-check.mjs",
+    "test:callibration": "node --test scripts/mine-sessions-check.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.82.0 <1.0.0"

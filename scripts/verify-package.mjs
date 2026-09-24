@@ -9,7 +9,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const temp = await mkdtemp(path.join(os.tmpdir(), "pi-card-package-"));
 const allowed = (file) =>
-  file === "package.json" || file === "README.md" || file === "LICENSE" || file.startsWith("src/") || file.startsWith("docs/");
+  file === "package.json" || file === "README.md" || file === "LICENSE" || file.startsWith("src/") || file.startsWith("docs/") || file.startsWith("skills/");
 
 try {
   const requestedTarball = process.argv[2];
@@ -26,14 +26,16 @@ try {
   if (manifest.name !== packageJson.name || manifest.version !== packageJson.version) {
     throw new Error("Packed package identity does not match package.json");
   }
-  const files = manifest.files.map(({ path: file }) => file);
+  if (!packageJson.pi?.skills?.includes("./skills")) {
+    throw new Error("Package manifest does not declare the packaged Pi skills directory");
+  }
   const packedFiles = (await execFile("tar", ["-tzf", tarball])).stdout
     .split("\n")
     .filter(Boolean)
     .map((file) => file.replace(/^package\//, "").replace(/\/$/, ""));
   const unexpected = packedFiles.find((file) => !allowed(file));
   if (unexpected) throw new Error(`Unexpected packed file: ${unexpected}`);
-  for (const required of ["package.json", "README.md", "LICENSE", "src/index.ts", "src/router.ts", "docs/configuration.md"]) {
+  for (const required of ["package.json", "README.md", "LICENSE", "src/index.ts", "src/router.ts", "docs/configuration.md", "skills/pi-card-callibration/SKILL.md", "skills/pi-card-callibration/scripts/mine-sessions.mjs"]) {
     if (!packedFiles.includes(required)) throw new Error(`Required packed file missing: ${required}`);
   }
   if (packedFiles.some((file) => /(^|\/)(\.pi|\.tmp|tests?|node_modules)(\/|$)/i.test(file) || /\.(test|spec)\.[cm]?tsx?$/.test(file))) {
@@ -66,7 +68,8 @@ try {
       cwd: process.cwd(),
       agentDir: process.env.PI_CARD_AGENT_DIR,
       additionalExtensionPaths: [extensionPath],
-      noSkills: true,
+      additionalSkillPaths: [path.resolve(process.env.PI_CARD_SKILLS)],
+      noSkills: false,
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
@@ -78,17 +81,23 @@ try {
     if (!loaded?.handlers.has("input") || !loaded.handlers.has("agent_settled")) {
       throw new Error("Pi host did not load Pi Card's registered input hooks");
     }
+    const skills = loader.getSkills();
+    if (skills.diagnostics.length) throw new Error(JSON.stringify(skills.diagnostics));
+    if (!skills.skills.some((skill) => skill.name === "pi-card-callibration")) {
+      throw new Error("Pi host did not discover the packaged pi-card-callibration skill");
+    }
   `);
   await execFile(process.execPath, [smoke], {
     cwd: consumer,
     env: {
       ...process.env,
       PI_CARD_EXTENSION: path.join(installed, "src/index.ts"),
+      PI_CARD_SKILLS: path.join(installed, "skills"),
       PI_CARD_AGENT_DIR: agentDir,
     },
   });
 
-  console.log(`Package verification passed: ${packageJson.name}@${packageJson.version} (${packedFiles.length} files, Pi extension hooks loaded)`);
+  console.log(`Package verification passed: ${packageJson.name}@${packageJson.version} (${packedFiles.length} files, Pi extension hooks and calibration skill loaded)`);
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

@@ -67,6 +67,7 @@ Cards work without an API key. The three message cards run immediately while Pi 
 ## More
 
 - [Configuration](docs/configuration.md): API key, personal examples, privacy, and diagnostics.
+- `/skill:pi-card-callibration`: opt-in, locally redacted calibration from user-approved past sessions.
 - [Development](docs/development.md): local checks, routing eval, and extension API.
 
 Without `TYPESAFE_API_KEY`, plain text keeps Pi's native behavior. With the key, eligible messages and configured examples go to an external service for classification. Check [the privacy details](docs/configuration.md#let-jev-choose) before enabling it.
